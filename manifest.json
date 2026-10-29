@@ -1,0 +1,62 @@
+{
+  "tmApi": 1,
+  "id": "antigravity-account-ledger",
+  "name": {
+    "en": "Antigravity Account Ledger",
+    "zh-TW": "Antigravity 多帳號用量帳本",
+    "zh-CN": "Antigravity 多账号用量账本"
+  },
+  "version": "0.1.0",
+  "description": {
+    "en": "Per-Google-account token usage, USD cost breakdown, and custom date-range attribution for Antigravity (Gemini & Claude/GPT models).",
+    "zh-TW": "按 Antigravity 切換登入的不同 Google 帳號與自訂日期區間統計全部模型（Gemini 與 Claude/GPT）的 Token 消耗與折算費用。",
+    "zh-CN": "按 Antigravity 切换登录的不同 Google 账号与自定义日期区间统计全部模型（Gemini 与 Claude/GPT）的 Token 消耗与折算费用。"
+  },
+  "author": "crrisugi",
+  "ui": "ui.mjs",
+  "backend": "backend.cjs",
+  "css": [
+    "styles.css"
+  ],
+  "files": [
+    "CHANGELOG.md",
+    "CHANGELOG.zh-CN.md",
+    "CHANGELOG.zh-TW.md",
+    "CHANGELOG.ko.md",
+    "CHANGELOG.ja.md",
+    "CHANGELOG.pt-BR.md",
+    "README.md",
+    "README.zh-CN.md",
+    "README.zh-TW.md",
+    "README.ko.md",
+    "README.ja.md",
+    "README.pt-BR.md",
+    "backend.cjs",
+    "ui.mjs",
+    "styles.css",
+    "LICENSE"
+  ],
+  "views": [
+    {
+      "id": "ledger",
+      "title": {
+        "en": "Antigravity Accounts",
+        "zh-TW": "Antigravity 帳號",
+        "zh-CN": "Antigravity 账号"
+      },
+      "surfaces": [
+        "home",
+        "page"
+      ],
+      "defaultSurfaces": [
+        "home",
+        "page"
+      ]
+    }
+  ],
+  "identityIcon": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAABEElEQVR4nO3YQQ6CQBBEUU7i3jNwGa/p6XAriUEM1f1rnKqE/fzH4MJlybIsa9rtvm5nHvqcsp0N/isQVfRwGNXh1hDd8TYIVLgFBB2NItCxKAIdiSLQcSgCHYUi0DE4Ah2CAtARKELFgR7P7fCxQpgagIi3QqDiqxACMFI8jhAAg/gKhHaAq/FqhOHePnIL3OLbb0EADOOVCOUAVfEqhADkE2gAqEBQnSsAXQBKBOWZvgI43oLWeLdb0P721QBXENTnCMAvoxHQ+ADkb3EOwSY+AACCXXwVgu0PXxdA1yMDGBFBGj8aQkn8KAil8e4ILfGuCK3xbghIvAME3b3b1PHvmzb806aMPtp0wVmW2e8FRShG0Hgzj1gAAAAASUVORK5CYII=",
+  "engines": {
+    "tokenMonitor": ">=0.81.0"
+  },
+  "homepage": "https://github.com/crrisugi/token-monitor-antigravity-ledger"
+}
