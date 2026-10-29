@@ -61,7 +61,7 @@ export function activate(ctx) {
       }
 
       const root = document.createElement('div');
-      root.className = `ag-ledger-root surface-${context.surface || 'page'}`;
+      root.className = `ag-ledger-root surface-${context?.surface || 'home'}`;
       container.append(root);
 
       // --- Header Controls ---
@@ -101,8 +101,6 @@ export function activate(ctx) {
         }
         hostHeadEnd.append(headerRight);
         hostHead?.addEventListener('click', onHeaderClick);
-      } else if (context?.headerActions) {
-        context.headerActions.replaceChildren(headerRight);
       } else {
         const standaloneHeader = document.createElement('header');
         standaloneHeader.className = 'ag-ledger-header';
