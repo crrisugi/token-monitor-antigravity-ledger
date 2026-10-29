@@ -68,7 +68,7 @@ collapseBtn.type = 'button';
 collapseBtn.className = 'ag-ledger-collapse-btn';
 const headerRight = document.createElement('div');
 headerRight.className = 'ag-ledger-header-right';
-headerRight.append(activeBadge, compactSummary, collapseBtn);
+headerRight.append(compactSummary, collapseBtn);
 const header = document.createElement('header');
 header.className = 'ag-ledger-header';
 const headerTitle = document.createElement('div');
@@ -84,7 +84,7 @@ function onHeaderClick(e) {
 if (e.target.closest('.ag-ledger-collapse-btn')) return;
 togglePluginCollapse();
 }
-header.append(headerTitle, headerRight);
+header.append(headerTitle, headerRight, activeBadge);
 header.addEventListener('click', onHeaderClick);
 root.append(header);
 const body = document.createElement('div');
@@ -283,13 +283,26 @@ refreshSummary(nextRefresh);
 }
 }
 }
+function normalizeDateRangeInputs() {
+const start = startInput.value;
+const end = endInput.value;
+if (start && end && start > end) {
+startInput.value = end;
+endInput.value = start;
+return { start: end, end: start, swapped: true }; }
+return { start, end, swapped: false }; }
 startInput.addEventListener('change', () => {
-startDate = startInput.value;
+const next = normalizeDateRangeInputs();
+startDate = next.start;
+if (next.swapped) { endDate = next.end;
+userLockedEndDate = Boolean(endDate && endDate !== getTodayString()); }
 userTouchedFilters = true;
 refreshSummary({ explicit: true });
 });
 endInput.addEventListener('change', () => {
-endDate = endInput.value;
+const next = normalizeDateRangeInputs();
+startDate = next.start;
+endDate = next.end;
 userLockedEndDate = Boolean(endDate && endDate !== getTodayString());
 userTouchedFilters = true;
 refreshSummary({ explicit: true });
@@ -314,17 +327,18 @@ const reasoningTokens = Number(summary?.reasoningTokens || 0);
 activeBadge.replaceChildren();
 if (activeAccount?.email) {
 activeBadge.className = 'ag-ledger-badge active';
+activeBadge.title = activeAccount.email;
 const dot = document.createElement('span');
 dot.className = 'ag-ledger-badge-dot';
 const text = document.createElement('span');
-text.textContent = `Active: ${activeAccount.email}`;
+text.textContent = activeAccount.email;
 activeBadge.append(dot, text);
 } else {
 activeBadge.className = 'ag-ledger-badge';
+activeBadge.title = '';
 activeBadge.textContent = '未检测到活跃账号';
 }
 activeBadge.classList.toggle('hidden', isPluginCollapsed);
-const currentSelected = accountSelect.value;
 accountSelect.replaceChildren();
 const optAll = document.createElement('option');
 optAll.value = 'all';
@@ -360,7 +374,7 @@ opt.value = acc.email;
 opt.textContent = label;
 accountSelect.append(opt);
 }
-const desiredFilter = currentSelected || accountFilter || 'all';
+const desiredFilter = accountFilter || 'all';
 if (desiredFilter !== 'all' && desiredFilter !== 'unattributed'
 && !accountsByEmail.has(desiredFilter.toLowerCase())) {
 const opt = document.createElement('option');

@@ -83,11 +83,15 @@ function readJson(filePath, fallback = null) { try { if (!fs.existsSync(filePath
 const content = fs.readFileSync(filePath, 'utf8');
 if (!content.trim()) return fallback;
 return JSON.parse(content); } catch (_) { return fallback; } }
-function writeJsonAtomic(filePath, data) { const dir = path.dirname(filePath);
+function writeJsonAtomic(filePath, data, options = {}) { const dir = path.dirname(filePath);
 if (!fs.existsSync(dir)) { fs.mkdirSync(dir, { recursive: true }); }
 const tempPath = `${filePath}.tmp.${Date.now()}.${Math.random().toString(36).slice(2)}`;
-fs.writeFileSync(tempPath, JSON.stringify(data, null, 2), 'utf8');
-fs.renameSync(tempPath, filePath); }
+const payload = options && options.compact ? JSON.stringify(data) : JSON.stringify(data, null, 2);
+try {
+fs.writeFileSync(tempPath, payload, 'utf8');
+fs.renameSync(tempPath, filePath); } catch (err) {
+try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); } catch (_) {}
+throw err; } }
 function parseProto(buf, keepFields = null) { const out = new Map();
 const errors = [];
 if (!buf || !buf.length) return { out, errors };
@@ -158,11 +162,12 @@ let pos = 0;
 const n = buf.length;
 while (pos < n) { let v = 0n;
 let s = 0n;
-while (true) { if (pos >= n) return res;
+while (true) { if (pos >= n) return [];
 const b = buf[pos++];
 v |= BigInt(b & 0x7f) << s;
 if ((b & 0x80) === 0) break;
-s += 7n; }
+s += 7n;
+if (s > 63n) return []; }
 res.push(Number(v)); }
 return res; }
 function decodeTimestamp(buf) { if (!buf || !buf.length) return null;
@@ -179,7 +184,8 @@ function decodeModelEnumPlaceholder(enumVal) { if (!enumVal || enumVal <= 0) ret
 if (enumVal >= 1000) return `MODEL_PLACEHOLDER_M${enumVal - 1000}`;
 return `MODEL_ENUM_${enumVal}`; }
 function parseUsageStats(buf) { if (!buf || !buf.length) return null;
-const { out: u } = parseProto(buf);
+const { out: u, errors } = parseProto(buf);
+if (errors.length > 0) return null;
 const modelEnum = fVal(u, 1, 0) || 0;
 const inp = fVal(u, 2, 0) || 0;
 const out = fVal(u, 3, 0) || 0;
@@ -190,6 +196,8 @@ const messageId = fStr(u, 7);
 const thinking = fVal(u, 9, 0) || 0;
 const respOut = fVal(u, 10, 0) || 0;
 const respId = fStr(u, 11);
+for (const value of [inp, out, cacheW, cacheR, thinking, respOut]) {
+if (!Number.isSafeInteger(value) || value < 0) return null; }
 const effectiveOut = out > 0 ? out : (thinking + respOut);
 const nonZero = (inp + effectiveOut + cacheW + cacheR + thinking + respOut) > 0;
 return { modelEnum, inputTokens: inp, outputTokens: effectiveOut, rawOutputTokens: out, cacheWriteTokens: cacheW,

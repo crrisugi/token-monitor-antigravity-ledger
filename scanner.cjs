@@ -17,6 +17,12 @@ usage.cacheWriteTokens || 0, usage.thinkingTokens || 0, usage.responseId || ''].
 function callUsageSignature(record) { if (!record) return '';
 return [record.modelEnum || 0, record.inputTokens || 0, record.outputTokens || 0, record.cacheReadTokens || 0,
 record.cacheWriteTokens || 0, record.reasoningTokens || 0].join(':'); }
+function removeSnapshotDir(dir) { if (!dir) return;
+// rmSync() can unlink the contents yet leave the directory behind on Windows, so remove the
+// files first and only then the directory itself.
+try { for (const name of fs.readdirSync(dir)) { try { fs.unlinkSync(path.join(dir, name)); } catch (_) {} } } catch (_) {}
+try { fs.rmdirSync(dir); } catch (_) {}
+try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); } catch (_) {} }
 function openConversationDbWithFallback(dbPath) { if (!DatabaseSync || !fs.existsSync(dbPath)) return null;
 let db = null;
 try { db = new DatabaseSync(dbPath, { readOnly: true });
@@ -48,9 +54,18 @@ const snapDbHandle = new DatabaseSync(snapDb, { readOnly: true });
 try { snapDbHandle.exec('PRAGMA busy_timeout = 250'); } catch (_) {}
 try { snapDbHandle.exec('PRAGMA query_only = ON'); } catch (_) {}
 return { db: snapDbHandle, close() { try { snapDbHandle.close(); } catch (_) {}
-if (tmpDir) { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {} } } }; } catch (_) {
-if (tmpDir) { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {} }
+removeSnapshotDir(tmpDir); } }; } catch (_) {
+removeSnapshotDir(tmpDir);
 return null; } } }
+function reclaimOrphanSnapshots() { const dir = getTempDir();
+let names = [];
+try { names = fs.readdirSync(dir); } catch (_) { return; }
+const cutoff = Date.now() - 600_000;
+for (const name of names) { if (!name.startsWith('ag-db-snap-')) continue;
+const full = path.join(dir, name);
+try { const st = fs.statSync(full);
+if (!st.isDirectory() || st.mtimeMs >= cutoff) continue;
+removeSnapshotDir(full); } catch (_) {} } }
 function scanConversationDb(dbPath, sourceName = 'antigravity') {
 const handle = openConversationDbWithFallback(dbPath);
 if (!handle) return [];
@@ -224,7 +239,7 @@ c.callTimestamp = prev.ts + ((targetIdx - prev.idx) / (next.idx - prev.idx)) * (
 } else if (prev) { c.callTimestamp = prev.ts; } else if (next) { c.callTimestamp = next.ts; } else {
 c.callTimestamp = fallbackFileTs; } }
 c.timestampMs = Math.round(c.callTimestamp * 1000);
-c.day = normalizeDate(c.timestampMs); }
+c.day = normalizeDate(new Date(c.timestampMs)); }
 return rawCalls;
 } finally { handle.close(); } }
 function getDefaultConversationSources(homeDir = os.homedir()) {
@@ -254,7 +269,8 @@ walMtimeMs = Math.round(wst.mtimeMs);
 walSize = wst.size; }
 return { mtimeMs: Math.round(st.mtimeMs), size: st.size, walMtimeMs, walSize,
 key: `${Math.round(st.mtimeMs)}:${st.size}:${walMtimeMs}:${walSize}` }; } catch (_) { return null; } }
-function scanAllConversationDbs(options = {}) { const homeDir = options.homeDir || os.homedir();
+function scanAllConversationDbs(options = {}) { reclaimOrphanSnapshots();
+const homeDir = options.homeDir || os.homedir();
 const sources = Array.isArray(options.conversationSources)
 ? options.conversationSources
 : (Array.isArray(options.conversationDirs)
@@ -267,36 +283,51 @@ const entries = {};
 for (const [dbPath, entry] of Object.entries(loaded.entries)) {
 if (entry && typeof entry === 'object' && typeof entry.key === 'string' && Array.isArray(entry.calls)) { entries[dbPath] = entry; } }
 return { version: DB_CACHE_VERSION, entries }; }
-let diskCache = (cacheFile ? loadDiskCache(cacheFile) : null) || { version: DB_CACHE_VERSION, entries: {} };
+let diskCache = null;
+let diskCacheLoaded = false;
+const ensureDiskCache = () => { if (diskCacheLoaded) return diskCache;
+diskCacheLoaded = true;
+diskCache = (cacheFile ? loadDiskCache(cacheFile) : null) || { version: DB_CACHE_VERSION, entries: {} };
 if (!cacheFile && !options.homeDir && !options.conversationDirs && !options.conversationSources) {
 const sharedCacheFile = path.join(getSharedDataDir(), 'plugin-data', 'antigravity-account-ledger', DEFAULT_DB_CACHE_FILENAME);
 diskCache = loadDiskCache(sharedCacheFile) || diskCache; }
+return diskCache; };
+const retagCalls = (calls, source) => { const list = Array.isArray(calls) ? calls : [];
+const out = new Array(list.length);
+for (let i = 0; i < list.length; i += 1) { const call = list[i];
+out[i] = (call && call.source !== source) ? { ...call, source } : call; }
+return out; };
 let cacheChanged = false;
 const rawRecords = [];
+const liveEntries = new Map();
 for (const src of sources) { if (!src || !src.dir || !fs.existsSync(src.dir)) continue;
 let files = [];
 try { files = fs.readdirSync(src.dir).filter((f) => f.endsWith('.db')).sort(); } catch (_) { continue; }
 for (const file of files) { const dbPath = path.join(src.dir, file);
 const fp = getDbFingerprint(dbPath);
 if (!fp) continue;
+const targetSource = src.source || 'antigravity';
 const memHit = GLOBAL_DB_SCAN_CACHE.get(dbPath);
-if (memHit && memHit.key === fp.key) { rawRecords.push(...memHit.calls);
-if (!diskCache.entries[dbPath] || diskCache.entries[dbPath].key !== fp.key) { diskCache.entries[dbPath] = memHit;
-cacheChanged = true; }
+if (memHit && memHit.key === fp.key) { rawRecords.push(...retagCalls(memHit.calls, targetSource));
+liveEntries.set(dbPath, memHit);
 continue; }
-const diskHit = diskCache.entries[dbPath];
+const diskHit = ensureDiskCache().entries[dbPath];
 if (diskHit && diskHit.key === fp.key && Array.isArray(diskHit.calls)) { GLOBAL_DB_SCAN_CACHE.set(dbPath, diskHit);
-rawRecords.push(...diskHit.calls);
+rawRecords.push(...retagCalls(diskHit.calls, targetSource));
+liveEntries.set(dbPath, diskHit);
 continue; }
 
-const calls = scanConversationDb(dbPath, src.source || 'antigravity');
+const calls = scanConversationDb(dbPath, targetSource);
 const entry = { key: fp.key, mtimeMs: fp.mtimeMs, size: fp.size, walMtimeMs: fp.walMtimeMs, walSize: fp.walSize,
 calls };
 GLOBAL_DB_SCAN_CACHE.set(dbPath, entry);
-diskCache.entries[dbPath] = entry;
+ensureDiskCache().entries[dbPath] = entry;
+liveEntries.set(dbPath, entry);
 cacheChanged = true;
 rawRecords.push(...calls); } }
-if (cacheChanged && cacheFile) { try { writeJsonAtomic(cacheFile, diskCache); } catch (_) {} }
+if (cacheChanged && cacheFile) { const cache = ensureDiskCache();
+for (const [dbPath, entry] of liveEntries) { cache.entries[dbPath] = entry; }
+try { writeJsonAtomic(cacheFile, cache, { compact: true }); } catch (_) {} }
 const dedupByKey = new Map();
 for (const rec of rawRecords) { const rid = rec.responseId;
 const dkey = rid
@@ -466,6 +497,18 @@ activeEmail = email; } } } catch (_) {} }
 return { accounts, activeEmail }; }
 const CLI_LOG_FN_RE = /cli-(\d{4})\d{4}_\d{6}\.log$/;
 const CLI_AUTH_RE = /I(\d{2})(\d{2})\s+(\d{2}):(\d{2}):(\d{2})\.(\d+)\s+\d+\s+server_oauth\.go:\d+\]\s+applyAuthResult:\s+email=([^\s,]+)/;
+const CLI_AUTH_RE_GLOBAL = new RegExp(CLI_AUTH_RE.source, 'g');
+const CLI_LOG_MAX_SCAN_BYTES = 4 * 1024 * 1024;
+const CLI_LOG_HEAD_BYTES = 64 * 1024;
+function readCliLogText(fd, size) { if (size <= CLI_LOG_MAX_SCAN_BYTES) { const buf = Buffer.alloc(size);
+fs.readSync(fd, buf, 0, size, 0);
+return buf.toString('utf8'); }
+const headBuf = Buffer.alloc(CLI_LOG_HEAD_BYTES);
+fs.readSync(fd, headBuf, 0, CLI_LOG_HEAD_BYTES, 0);
+const tailLen = CLI_LOG_MAX_SCAN_BYTES - CLI_LOG_HEAD_BYTES;
+const tailBuf = Buffer.alloc(tailLen);
+fs.readSync(fd, tailBuf, 0, tailLen, size - tailLen);
+return `${headBuf.toString('utf8')}\n${tailBuf.toString('utf8')}`; }
 function discoverCliLogWindows(options = {}) { const home = options.homeDir || os.homedir();
 const cliBase = options.cliHomeDir || process.env.GEMINI_CLI_HOME || path.join(home, '.gemini', 'antigravity-cli');
 const logDir = options.cliLogDir || path.join(cliBase, 'log');
@@ -476,16 +519,18 @@ for (const file of files) { const fullPath = path.join(logDir, file);
 let fd = null;
 try { const st = fs.statSync(fullPath);
 fd = fs.openSync(fullPath, 'r');
-const buf = Buffer.alloc(Math.min(32768, st.size || 0));
-fs.readSync(fd, buf, 0, buf.length, 0);
-const m = buf.toString('utf8').match(CLI_AUTH_RE);
-if (!m) continue;
+const text = readCliLogText(fd, st.size || 0);
+const matches = [...text.matchAll(CLI_AUTH_RE_GLOBAL)];
+if (!matches.length) continue;
+const m = matches[matches.length - 1];
 const fnMatch = file.match(CLI_LOG_FN_RE);
-const year = fnMatch ? Number(fnMatch[1]) : new Date(st.mtimeMs).getFullYear();
+let year = fnMatch ? Number(fnMatch[1]) : new Date(st.mtimeMs).getFullYear();
 const [, mo, da, hh, mm, ss, us, rawEmail] = m;
 const email = normalizeEmail(rawEmail);
 if (!email) continue;
-const startMs = new Date(year, Number(mo) - 1, Number(da), Number(hh), Number(mm), Number(ss), Math.floor(Number(us) / 1000)).getTime();
+const buildStartMs = (yr) => new Date(yr, Number(mo) - 1, Number(da), Number(hh), Number(mm), Number(ss), Math.floor(Number(us) / 1000)).getTime();
+let startMs = buildStartMs(year);
+if (fnMatch && startMs > st.mtimeMs + 86400_000) { year -= 1; startMs = buildStartMs(year); }
 const endMs = Math.min(Math.max(startMs + 60_000, Math.round(st.mtimeMs) + 60_000), startMs + 24 * 60 * 60 * 1000);
 windows.push({ email, startMs: startMs - 5_000, endMs, source: 'cli_log' }); } catch (_) {} finally {
 if (fd !== null) { try { fs.closeSync(fd); } catch (_) {} } } } } catch (_) {}
@@ -529,8 +574,11 @@ if (!email) return;
 const existing = map.get(email);
 const source = acc.source || 'unknown';
 if (!existing) { map.set(email, { email, displayName: acc.displayName || email, sources: [source],
-createdAt: acc.createdAt || null, lastUsed: acc.lastUsed || null, quota: acc.quota || null }); } else {
+createdAt: acc.createdAt || null, lastUsed: acc.lastUsed || null, quota: acc.quota || null,
+disabled: acc.disabled === true }); } else {
 if (source && !existing.sources.includes(source)) { existing.sources.push(source); }
+if (acc.disabled === true) { existing.disabled = true; }
+else if (acc.disabled === false) { existing.disabled = false; }
 if (acc.displayName && acc.displayName !== email && (!existing.displayName || existing.displayName === email)) {
 existing.displayName = acc.displayName; }
 if (acc.createdAt) { const createdMs = toEpochMs(acc.createdAt);
@@ -576,6 +624,7 @@ const detectActiveAccount = discoverCurrentAccount;
 module.exports = {
   ...proto,
   openConversationDbWithFallback, scanConversationDb, getDefaultConversationSources, getDbFingerprint, scanAllConversationDbs,
+  reclaimOrphanSnapshots,
   extractEmailFromUserStatusValue, getVscdbCandidates, discoverFromVscdb, discoverFromTools,
   discoverFromGoogleAccountsJson, discoverFromOAuthTokens, discoverCliLogWindows, discoverToolsTokenStatsWindows,
   discoverFromManaged, discoverAccounts, discoverCurrentAccount, detectActiveAccount,

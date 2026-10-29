@@ -16,6 +16,7 @@ const byGroup = { 'gemini-weekly': [], '3p-weekly': [], 'argon-weekly': [] };
 const seenAccountGroup = new Map();
 for (const acc of sourceAccounts) { const email = normalizeEmail(typeof acc === 'string' ? acc : acc?.email);
 if (!email || !acc || typeof acc !== 'object') continue;
+if (acc.disabled === true) continue;
 const quota = acc.quota;
 if (!quota || typeof quota !== 'object') continue;
 const createdAtMs = toEpochMs(acc.created_at ?? acc.createdAt ?? 0);
@@ -75,13 +76,21 @@ function normalizeLedger(loaded) { return { version: 1,
 featureActivatedAt: loaded?.featureActivatedAt || new Date().toISOString(),
 lastActiveAccount: loaded?.lastActiveAccount || null,
 timeline: Array.isArray(loaded?.timeline) ? loaded.timeline : [],
-sessionAccounts: (loaded?.sessionAccounts && typeof loaded.sessionAccounts === 'object') ? loaded.sessionAccounts : {}
+sessionAccounts: (loaded?.sessionAccounts && typeof loaded.sessionAccounts === 'object' && !Array.isArray(loaded.sessionAccounts)) ? loaded.sessionAccounts : {}
 }; }
+function isLedgerStructureValid(loaded) { if (!loaded || typeof loaded !== 'object' || Array.isArray(loaded)) return false;
+if (loaded.version !== undefined && loaded.version !== 1) return false;
+if (loaded.timeline !== undefined && !Array.isArray(loaded.timeline)) return false;
+if (loaded.sessionAccounts !== undefined && (!loaded.sessionAccounts || typeof loaded.sessionAccounts !== 'object' || Array.isArray(loaded.sessionAccounts))) return false;
+return loaded.version !== undefined || loaded.featureActivatedAt !== undefined || loaded.timeline !== undefined
+|| loaded.sessionAccounts !== undefined || loaded.lastActiveAccount !== undefined; }
 function loadLedger(ledgerFile) { if (!ledgerFile) return createDefaultLedger();
-if (fs.existsSync(ledgerFile)) { try {
+if (fs.existsSync(ledgerFile)) { let corrupt = false;
+try {
 const loaded = JSON.parse(fs.readFileSync(ledgerFile, 'utf8'));
-if (loaded && typeof loaded === 'object') { return normalizeLedger(loaded); } } catch (_) {
-const backupFile = `${ledgerFile}.corrupt-${Date.now()}`;
+if (isLedgerStructureValid(loaded)) { return normalizeLedger(loaded); }
+corrupt = true; } catch (_) { corrupt = true; }
+if (corrupt) { const backupFile = `${ledgerFile}.corrupt-${Date.now()}`;
 try { fs.renameSync(ledgerFile, backupFile); } catch (_) {} } }
 const defaultLedger = createDefaultLedger();
 try { writeJsonAtomic(ledgerFile, defaultLedger); } catch (_) {}
@@ -114,7 +123,7 @@ function attributeCallRecord(call, options = {}) { const ledger = options.ledger
 const quotaWindows = options.quotaWindows;
 const tsMs = typeof call?.timestampMs === 'number' && Number.isFinite(call.timestampMs)
 ? call.timestampMs
-: toEpochMs(call?.callTimestamp ?? call?.timestamp ?? call?.startedAt ?? call?.day);
+: toEpochMs(call?.callTimestamp || call?.timestamp || call?.startedAt || call?.day);
 const convId = call?.conversationId || call?.sessionId;
 if (convId && ledger?.sessionAccounts?.[convId]?.source === 'manual' && ledger.sessionAccounts[convId].email) {
 return { email: normalizeEmail(ledger.sessionAccounts[convId].email), source: 'manual', layer: 1,
@@ -176,7 +185,7 @@ const ts = session.startedAt
 || session.lastUsedAt
 || session.periods?.allTime?.lastUsedAt
 || '';
-return typeof ts === 'string' ? ts : ''; }
+return (typeof ts === 'string' || (typeof ts === 'number' && Number.isFinite(ts))) ? ts : ''; }
 function resolveSessionDate(session) { if (!session || typeof session !== 'object') return '';
 if (hasActiveTodayPeriod(session) && session.day) { return normalizeDate(session.day); }
 if (session.periods && !hasActiveTodayPeriod(session)) {
@@ -309,6 +318,8 @@ const legacyDay = existing.lastDay || dayKey;
 existing.allocationsByDay[legacyDay] = cloneAllocations(existing.allocations);
 changed = true; }
 const hasAllTimeObj = Boolean(session?.periods?.allTime);
+const regressed = Boolean( hasAllTimeObj && existing.lastSnapshot
+&& allTimeMetrics.totalTokens < existing.lastSnapshot.totalTokens );
 const dayRolledOver = Boolean( !hasAllTimeObj
 && ((currentDay && existing.lastDay && currentDay > existing.lastDay)
 || allTimeMetrics.totalTokens < existing.lastSnapshot.totalTokens)
@@ -327,6 +338,12 @@ const dayAlloc = existing.allocationsByDay[dayKey];
 if (!dayAlloc[activeEmail]) { dayAlloc[activeEmail] = { totalTokens: 0, costUsd: 0,
 inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, models: {} }; }
 addUsageToBucket(dayAlloc[activeEmail], delta);
+existing.lastSnapshot = cloneMetrics(allTimeMetrics);
+existing.lastDay = currentDay || existing.lastDay || null;
+existing.email = activeEmail;
+changed = true; } else if (regressed) {
+// The session was truncated or recompressed: the remaining total was already attributed before
+// the regression, so re-anchor the high-water mark instead of counting it a second time.
 existing.lastSnapshot = cloneMetrics(allTimeMetrics);
 existing.lastDay = currentDay || existing.lastDay || null;
 existing.email = activeEmail;
@@ -411,7 +428,7 @@ target.reasoningTokens += m.reasoningTokens || 0; } }
 module.exports = {
   extractObsMetrics, addUsageToBucket,
   quotaGroupForModel, toEpochMs, buildQuotaAttributionWindows, createDefaultLedger,
-  normalizeLedger, loadLedger, saveLedger, recordAccountHeartbeat,
+  normalizeLedger, isLedgerStructureValid, loadLedger, saveLedger, recordAccountHeartbeat,
   attributeCallRecord,
   emptyMetrics, emptyAccountBucket, cloneMetrics, hasActiveTodayPeriod,
   extractSessionTimestamp, resolveSessionDate, extractSessionMetrics, subtractMetrics,
