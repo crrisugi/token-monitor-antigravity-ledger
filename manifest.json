@@ -45,12 +45,10 @@
         "zh-CN": "Antigravity 账号"
       },
       "surfaces": [
-        "home",
-        "page"
+        "home"
       ],
       "defaultSurfaces": [
-        "home",
-        "page"
+        "home"
       ]
     }
   ],

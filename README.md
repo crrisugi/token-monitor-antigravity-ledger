@@ -11,7 +11,7 @@ Requires Token Monitor **0.81.0 or later**. Import this repository folder or `.t
 - **Automatic multi-account attribution**: Detects the active Google account from Antigravity's local `state.vscdb` (`antigravityAuthStatus` / `google.geminicodeassist`) and attributes session deltas to each account timeline automatically.
 - **Full model coverage**: Tracks both Gemini models (from local brain session logs) and non-Gemini models such as Claude Sonnet/Opus and GPT (from implicit trajectory protobufs and local quota snapshots).
 - **Custom date range & account filter**: Inspect token usage (Input, Output, Cache Read, Reasoning) and estimated USD cost for any `YYYY-MM-DD ~ YYYY-MM-DD` window and individual Google account.
-- **Collapsible Home & Page views**: Supports compact header collapse in the Home module header and native `context.headerActions` in the Page view, with an optional toggleable account-share comparison table.
+- **Collapsible Home module view**: Embeds directly into the Token Monitor Home stream with compact header collapse in the Home module header and an optional toggleable account-share comparison table.
 
 ## Data and privacy
 
