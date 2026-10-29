@@ -197,7 +197,7 @@ togglePluginCollapse();
 updatePluginCollapse();
 function renderStatusBanner() {
 statusBanner.replaceChildren();
-statusBanner.classList.remove('is-error');
+statusBanner.classList.remove('is-error', 'hidden');
 statusBanner.setAttribute('role', 'status');
 if (loadError) {
 statusBanner.classList.add('is-error');
@@ -214,31 +214,11 @@ refreshSummary();
 statusBanner.append(message, retryBtn);
 return;
 }
-if (isLoading || !state) {
+if (!state) {
 statusBanner.textContent = '正在扫描本地 Antigravity 用量记录...';
 return;
 }
-const summary = state.summary || state;
-const totalTokens = Number(summary?.totalTokens || 0);
-const costUsd = Number(summary?.costUsd || 0);
-const cov = summary?.coverage || {};
-const overallTokens = Number(summary?.overallTotalTokens ?? totalTokens);
-const overallCostUsd = Number(summary?.overallCostUsd ?? costUsd);
-const isSpecificAccount = accountFilter && accountFilter !== 'all' && accountFilter !== 'unattributed';
-if (accountFilter === 'all') {
-const tokenCoverage = cov.tokenCoveragePercent ?? 100;
-const costCoverage = cov.costCoveragePercent ?? 100;
-statusBanner.textContent = `自动多账号归属（实时心跳时间线 + 配额周期/日志锚点）· 已归属到具体账号：${tokenCoverage}% Tokens（${formatTokens(cov.attributedTokens)} / ${formatTokens(overallTokens)}）· ${costCoverage}% 费用（${formatCost(cov.attributedCostUsd)} / ${formatCost(overallCostUsd)}）；其余归入「历史汇总（未归属）」。`;
-} else if (accountFilter === 'unattributed') {
-statusBanner.textContent = '当前正在查看：历史汇总（未归属） — 仅包含未能通过心跳时间线、配额周期或日志锚点关联到具体账号的历史记录。';
-} else if (isSpecificAccount) {
-if (totalTokens === 0) {
-statusBanner.textContent = '该账号在所选区间暂无归属记录（切换至该账号使用 Antigravity 后将自动记录并归属用量）。';
-} else {
-const accShare = summary?.accounts?.find(a => a.email === accountFilter)?.percentageOfTotal || 0;
-statusBanner.textContent = `当前账号归属用量：${formatTokens(totalTokens)} Tokens · 折算费用 ${formatCost(costUsd)}（在当前区间占比 ${accShare}%）。`;
-}
-}
+statusBanner.classList.add('hidden');
 }
 async function refreshSummary() {
 if (isLoading || isDisposed) return;
