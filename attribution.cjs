@@ -138,8 +138,9 @@ if (tw.startMs <= tsMs && tsMs <= tw.endMs) { return { email: normalizeEmail(tw.
 source: 'tools_token_stats', layer: 2, isUnattributed: false }; } } }
 const groupKey = quotaGroupForModel(call?.model);
 const candidateGroups = [groupKey];
-const hasArgonWindows = Array.isArray(quotaWindows['argon-weekly']) && quotaWindows['argon-weekly'].length > 0;
-if (groupKey === 'argon-weekly' && !hasArgonWindows) { candidateGroups.push('gemini-weekly'); }
+const hasConsumedArgonMatch = Array.isArray(quotaWindows['argon-weekly'])
+&& quotaWindows['argon-weekly'].some((w) => w.consumed && w.startMs <= tsMs && tsMs <= w.endMs);
+if (groupKey === 'argon-weekly' && !hasConsumedArgonMatch) { candidateGroups.push('gemini-weekly'); }
 const mLower = String(call?.model || '').toLowerCase();
 if (groupKey !== 'argon-weekly'
  && !mLower.startsWith('gemini') && !mLower.startsWith('claude') && !mLower.startsWith('gpt')) {

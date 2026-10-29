@@ -102,7 +102,8 @@ if (endDay && sessionDate > endDay) continue; }
 const startedAt = extractSessionTimestamp(session);
 const hasToday = hasActiveTodayPeriod(session);
 const isEligible = Boolean(
-hasToday || (startedAt && ledger.featureActivatedAt && startedAt >= ledger.featureActivatedAt)
+hasToday || (toEpochMs(startedAt) > 0 && toEpochMs(ledger.featureActivatedAt) > 0
+&& toEpochMs(startedAt) >= toEpochMs(ledger.featureActivatedAt))
 );
 const binding = session.sessionId && ledger.sessionAccounts?.[session.sessionId];
 const dayAlloc = allocationsForDay(binding, sessionDate || 'unknown');
@@ -124,7 +125,8 @@ if (!isAntigravityClient(session?.client)) continue;
 const startedAt = extractSessionTimestamp(session);
 const hasToday = hasActiveTodayPeriod(session);
 const isPostActivation = Boolean(
-hasToday || (startedAt && ledger.featureActivatedAt && startedAt >= ledger.featureActivatedAt)
+hasToday || (toEpochMs(startedAt) > 0 && toEpochMs(ledger.featureActivatedAt) > 0
+&& toEpochMs(startedAt) >= toEpochMs(ledger.featureActivatedAt))
 );
 const isManualBinding = session.sessionId && ledger.sessionAccounts?.[session.sessionId]?.source === 'manual';
 if (!isPostActivation && !isManualBinding) continue;

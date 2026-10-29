@@ -8,6 +8,8 @@ Per-Google-account token usage, USD cost breakdown, custom date-range filtering,
 
 Requires Token Monitor **0.81.0 or later**. Token Monitor 0.80.0 does not include the plugin runtime and refuses to install plugins. On 0.81.0+, install this plugin directly from the built-in **Token Monitor Community** directory, or import the complete plugin folder / `.tmplugin` package through **Settings → Plugins → Install from file**, review it and enable it.
 
+Platform testing: verified on Windows with Token Monitor 0.81.0; macOS and Linux pass the Node contract and unit tests, with the desktop GUI still awaiting real-machine verification.
+
 ## Features
 
 - **Automatic multi-account attribution**: Detects the active Google account from local Antigravity state and attributes usage through the active-account heartbeat timeline plus local quota reset windows and CLI/tool log anchors. Records it cannot match stay in a separate unattributed bucket.

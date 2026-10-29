@@ -8,6 +8,8 @@ Acompanhe o uso de tokens do Antigravity (modelos Gemini e Claude/GPT) e o detal
 
 Requer o Token Monitor **0.81.0 ou superior**. O Token Monitor 0.80.0 não inclui o runtime de plugins e recusa a instalação. No 0.81.0 ou superior, instale diretamente pelo diretório integrado **Token Monitor Community** ou importe a pasta do plugin / pacote `.tmplugin` em **Configurações → Plugins → Instalar de arquivo**, revise e ative.
 
+Testes de plataforma: validado no Windows com o Token Monitor 0.81.0; macOS e Linux passam nos contratos do Node e nos testes unitários, com a GUI de desktop aguardando validação real.
+
 ## Recursos
 
 - **Atribuição automática entre contas**: detecta a conta Google ativa a partir do estado local do Antigravity e atribui o uso pela linha do tempo de heartbeat da conta ativa, pelas janelas locais de redefinição de cota e por âncoras de logs da CLI/ferramentas. Registros sem correspondência ficam em um bucket não atribuído separado.
