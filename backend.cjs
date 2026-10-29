@@ -1,7 +1,6 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const os = require('node:os');
 const scanner = require('./scanner.cjs');
 const attr = require('./attribution.cjs');
 const {
@@ -15,8 +14,8 @@ const {
 } = scanner;
 const {
   quotaGroupForModel, toEpochMs, buildQuotaAttributionWindows, createDefaultLedger,
-  normalizeAttributionRules, normalizeLedger, loadLedger, saveLedger, recordAccountHeartbeat,
-  assignDateRange, removeDateRangeRule, attributeCallRecord,
+  normalizeLedger, loadLedger, saveLedger, recordAccountHeartbeat,
+  attributeCallRecord,
   emptyMetrics, emptyAccountBucket, cloneMetrics, hasActiveTodayPeriod,
   extractSessionTimestamp, resolveSessionDate, extractSessionMetrics, subtractMetrics,
   syncActiveAccountSessions, attributeSession, extractObsMetrics, addUsageToBucket
@@ -44,13 +43,19 @@ for (const acc of discoveredAccounts) { const email = normalizeEmail(typeof acc 
 if (!email) continue;
 const displayName = (typeof acc === 'object' && (acc.displayName || acc.name)) || email;
 getOrCreateAccount(email, displayName); }
-if (Array.isArray(calls) && calls.length > 0) { for (const call of calls) {
+let totalCalls = 0;
+let attributedCalls = 0;
+let unattributedCalls = 0;
+const useCalls = Array.isArray(calls) && calls.length > 0;
+if (useCalls) { for (const call of calls) {
 if (!call || typeof call !== 'object') continue;
 const callDay = call.day || normalizeDate(call.timestampMs || (call.callTimestamp ? call.callTimestamp * 1000 : ''));
 if (callDay) { if (startDay && callDay < startDay) continue;
 if (endDay && callDay > endDay) continue; }
-const attr = attributeCallRecord(call, { ledger, quotaWindows });
-const bucket = getOrCreateAccount(attr.email);
+const attribution = attributeCallRecord(call, { ledger, quotaWindows });
+totalCalls += 1;
+if (attribution.isUnattributed) { unattributedCalls += 1; } else { attributedCalls += 1; }
+const bucket = getOrCreateAccount(attribution.email);
 const modelId = call.model || 'unknown';
 const totalTokens = Number(call.totalTokens ?? ((call.inputTokens || 0) + (call.outputTokens || 0) + (call.cacheReadTokens || 0) + (call.cacheWriteTokens || 0)));
 const costUsd = Number(call.costUsd || 0);
@@ -81,12 +86,8 @@ hasToday || (startedAt && ledger.featureActivatedAt && startedAt >= ledger.featu
 );
 const binding = session.sessionId && ledger.sessionAccounts?.[session.sessionId];
 if (isEligible && binding?.allocations && Object.keys(binding.allocations).length > 0) {
-for (const [allocEmail, allocMetrics] of Object.entries(binding.allocations)) { let targetEmail = allocEmail;
-if (targetEmail === 'unattributed' && sessionDate && Array.isArray(ledger.attributionRules)) {
-for (let i = ledger.attributionRules.length - 1; i >= 0; i -= 1) { const rule = ledger.attributionRules[i];
-if (rule.startDate <= sessionDate && sessionDate <= rule.endDate) { targetEmail = rule.email;
-break; } } }
-addUsageToBucket(getOrCreateAccount(targetEmail), allocMetrics); } } else {
+for (const [allocEmail, allocMetrics] of Object.entries(binding.allocations)) {
+addUsageToBucket(getOrCreateAccount(allocEmail), allocMetrics); } } else {
 const attr = attributeSession(session, ledger, { bindNewSessions: options.bindNewSessions ?? false, quotaWindows
 });
 const sMetrics = extractSessionMetrics(session, { preferAllTime: true });
@@ -134,12 +135,8 @@ const sMetrics = extractSessionMetrics(session, { preferToday: hasActiveTodayPer
 addUsageToBucket(getOrCreateAccount(sAttr.email), sMetrics);
 addUsageToBucket(subTotal, sMetrics); } }
 const rem = subtractMetrics(dayTotal, subTotal);
-if (rem.totalTokens > 0 || rem.costUsd > 0) { let remEmail = 'unattributed';
-if (d !== 'unknown' && Array.isArray(ledger.attributionRules)) {
-for (let i = ledger.attributionRules.length - 1; i >= 0; i -= 1) { const rule = ledger.attributionRules[i];
-if (rule.startDate <= d && d <= rule.endDate) { remEmail = rule.email;
-break; } } }
-addUsageToBucket(getOrCreateAccount(remEmail), rem); } }
+if (rem.totalTokens > 0 || rem.costUsd > 0) {
+addUsageToBucket(getOrCreateAccount('unattributed'), rem); } }
 for (const [d, daySessions] of postActSessionsByDay.entries()) { if (obsByDay.has(d)) continue;
 for (const session of daySessions) {
 const binding = session.sessionId && ledger.sessionAccounts?.[session.sessionId];
@@ -208,8 +205,25 @@ reasoningTokens = target.reasoningTokens;
 models = target.models; }
 const accounts = Object.values(byAccount);
 accounts.sort((a, b) => b.totalTokens - a.totalTokens || a.email.localeCompare(b.email));
+const unattrBucket = byAccount.unattributed || { totalTokens: 0, costUsd: 0 };
+const unattributedTokens = unattrBucket.totalTokens || 0;
+const attributedTokens = Math.max(0, overallTotalTokens - unattributedTokens);
+const unattributedCostUsd = Number((unattrBucket.costUsd || 0).toFixed(6));
+const attributedCostUsd = Number(Math.max(0, overallCostUsd - unattributedCostUsd).toFixed(6));
+const tokenCoveragePercent = overallTotalTokens > 0
+? Number(((attributedTokens / overallTotalTokens) * 100).toFixed(1))
+: 100;
+const costCoveragePercent = overallCostUsd > 0
+? Number(((attributedCostUsd / overallCostUsd) * 100).toFixed(1))
+: 100;
+const coverage = { attributedTokens, unattributedTokens, attributedCostUsd, unattributedCostUsd,
+tokenCoveragePercent, costCoveragePercent };
+if (useCalls) { coverage.totalCalls = totalCalls;
+coverage.attributedCalls = attributedCalls;
+coverage.unattributedCalls = unattributedCalls; }
 return { accountFilter: filter, totalTokens, costUsd, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
-reasoningTokens, models, accounts, byAccount, overallTotalTokens }; }
+reasoningTokens, models, accounts, byAccount, overallTotalTokens, overallCostUsd: Number(overallCostUsd.toFixed(6)),
+coverage }; }
 function loadArchivedSessions(appDataRoot) { const sessions = [];
 if (DatabaseSync) { const dbPath = path.join(appDataRoot, 'session-usage-archive.sqlite');
 if (fs.existsSync(dbPath)) { try { const db = new DatabaseSync(dbPath, { readOnly: true });
@@ -238,12 +252,15 @@ try { fs.mkdirSync(pluginDataDir, { recursive: true }); } catch (_) {}
 const pluginLedgerFile = path.join(pluginDataDir, DEFAULT_LEDGER_FILENAME);
 const hostLedgerFile = path.join(hostDataDir, DEFAULT_LEDGER_FILENAME);
 const dbCacheFile = path.join(pluginDataDir, DEFAULT_DB_CACHE_FILENAME);
+const preferencesFile = path.join(pluginDataDir, 'preferences.json');
 let currentFilter = 'all';
 let currentRange = null;
-if (storage && typeof storage.get === 'function') { try { const savedPrefs = await storage.get('preferences');
-if (savedPrefs && typeof savedPrefs === 'object') {
-if (savedPrefs.accountFilter) currentFilter = savedPrefs.accountFilter;
-if (savedPrefs.range) currentRange = savedPrefs.range; } } catch (_) {} }
+function applyPreferences(prefs) { if (!prefs || typeof prefs !== 'object') return;
+if (prefs.accountFilter) currentFilter = prefs.accountFilter;
+if (prefs.range) currentRange = prefs.range; }
+applyPreferences(readJson(preferencesFile, null));
+if (storage && typeof storage.get === 'function') { try {
+applyPreferences(await storage.get('preferences')); } catch (_) {} }
 function resolveLedger() { if (fs.existsSync(pluginLedgerFile)) {
 return { ledger: loadLedger(pluginLedgerFile), ledgerFile: pluginLedgerFile }; }
 if (fs.existsSync(hostLedgerFile)) { const migrated = loadLedger(hostLedgerFile);
@@ -273,26 +290,18 @@ range: currentRange, accountFilter: currentFilter, discoveredAccounts, ledger, q
 const resolvedActive = activeAccount
 || (ledger.lastActiveAccount ? { email: ledger.lastActiveAccount, source: 'ledger_last_active' } : null);
 return { summary, ...summary, activeAccount: resolvedActive, discoveredAccounts, ledger,
-attributionRules: ledger.attributionRules || [], featureActivatedAt: ledger.featureActivatedAt,
+featureActivatedAt: ledger.featureActivatedAt,
 range: currentRange, scannerStats: { source: calls.length > 0 ? 'sqlite_protobuf_calls' : 'daily_history_fallback',
 totalCalls: calls.length
 }, updatedAt: new Date().toISOString() }; }
-async function savePreferences() { if (storage && typeof storage.set === 'function') { try {
-await storage.set('preferences', { accountFilter: currentFilter, range: currentRange }); } catch (_) {} } }
+async function savePreferences() { const prefs = { accountFilter: currentFilter, range: currentRange };
+if (storage && typeof storage.set === 'function') { try { await storage.set('preferences', prefs); } catch (_) {} }
+try { writeJsonAtomic(preferencesFile, prefs); } catch (_) {} }
 const actions = { async getSummary(payload = {}) { const result = computeSummary(payload);
 await savePreferences();
 if (typeof publish === 'function') { try { publish(result); } catch (_) {} }
 return result;
-}, async assignDateRange(payload = {}) { const { ledger, ledgerFile } = resolveLedger();
-assignDateRange(payload, ledger, ledgerFile);
-const result = computeSummary({});
-if (typeof publish === 'function') { try { publish(result); } catch (_) {} }
-return result;
-}, async removeDateRangeRule(payload = {}) { const { ledger, ledgerFile } = resolveLedger();
-removeDateRangeRule(payload, ledger, ledgerFile);
-const result = computeSummary({});
-if (typeof publish === 'function') { try { publish(result); } catch (_) {} }
-return result; } };
+} };
 return { actions, async call(method, args = {}) { if (typeof actions[method] === 'function') {
 return await actions[method](args); }
 throw new Error(`Unknown method: ${method}`);

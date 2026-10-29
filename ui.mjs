@@ -31,6 +31,8 @@ let endDate = getTodayString();
 let accountFilter = 'all';
 let state = null;
 let isLoading = false;
+let loadError = null;
+let isVisible = true;
 let isPluginCollapsed = false;
 try {
 const saved = localStorage.getItem('ag_ledger_plugin_collapsed');
@@ -62,31 +64,24 @@ collapseBtn.className = 'ag-ledger-collapse-btn';
 const headerRight = document.createElement('div');
 headerRight.className = 'ag-ledger-header-right';
 headerRight.append(activeBadge, compactSummary, collapseBtn);
-const hostModule = container.closest('.home-module');
-const hostHead = hostModule?.querySelector('.home-module-head');
-const hostHeadEnd = hostModule?.querySelector('.home-module-head-end');
-const hostMeta = hostHeadEnd?.querySelector('.home-module-meta');
+const header = document.createElement('header');
+header.className = 'ag-ledger-header';
+const headerTitle = document.createElement('div');
+headerTitle.className = 'ag-ledger-header-title';
+const title = document.createElement('span');
+title.className = 'ag-ledger-title';
+title.textContent = 'Antigravity 多账号账本';
+const titleHint = document.createElement('span');
+titleHint.className = 'ag-ledger-title-hint';
+titleHint.textContent = '自动多账号归属';
+headerTitle.append(title, titleHint);
 function onHeaderClick(e) {
 if (e.target.closest('.ag-ledger-collapse-btn')) return;
 togglePluginCollapse();
 }
-if (hostHeadEnd) {
-if (hostMeta) {
-hostMeta.style.display = 'none';
-}
-const stale = hostHeadEnd.querySelector('.ag-ledger-header-right');
-if (stale) {
-stale.remove();
-}
-hostHeadEnd.append(headerRight);
-hostHead?.addEventListener('click', onHeaderClick);
-} else {
-const standaloneHeader = document.createElement('header');
-standaloneHeader.className = 'ag-ledger-header';
-standaloneHeader.append(headerRight);
-standaloneHeader.addEventListener('click', onHeaderClick);
-root.append(standaloneHeader);
-}
+header.append(headerTitle, headerRight);
+header.addEventListener('click', onHeaderClick);
+root.append(header);
 const body = document.createElement('div');
 body.className = 'ag-ledger-body';
 root.append(body);
@@ -121,24 +116,11 @@ defaultOpt.value = 'all';
 defaultOpt.textContent = '全部 Antigravity 账号 (All Accounts)';
 accountSelect.append(defaultOpt);
 accountGroup.append(accountLabel, accountSelect);
-const assignGroup = document.createElement('div');
-assignGroup.className = 'ag-ledger-group';
-const assignLabel = document.createElement('span');
-assignLabel.className = 'ag-ledger-label';
-assignLabel.textContent = '区间归属:';
-const assignSelect = document.createElement('select');
-assignSelect.className = 'ag-ledger-select ag-ledger-assign-select';
-const assignBtn = document.createElement('button');
-assignBtn.type = 'button';
-assignBtn.className = 'ag-ledger-btn ag-ledger-btn-secondary ag-ledger-assign-btn';
-assignBtn.textContent = '将所选区间归属到账号';
-const rulesWrap = document.createElement('div');
-rulesWrap.className = 'ag-ledger-tag-list hidden';
-assignGroup.append(assignLabel, assignSelect, assignBtn);
-filterBar.append(dateGroup, accountGroup, assignGroup, rulesWrap);
+filterBar.append(dateGroup, accountGroup);
 body.append(filterBar);
 const statusBanner = document.createElement('div');
 statusBanner.className = 'ag-ledger-status-banner';
+statusBanner.setAttribute('role', 'status');
 body.append(statusBanner);
 const kpiGrid = document.createElement('div');
 kpiGrid.className = 'ag-ledger-kpi-grid';
@@ -197,9 +179,6 @@ collapseBtn.setAttribute('aria-expanded', String(!isPluginCollapsed));
 collapseBtn.textContent = isPluginCollapsed ? '展开 ▾' : '收起 ▴';
 root.classList.toggle('is-collapsed', isPluginCollapsed);
 body.classList.toggle('hidden', isPluginCollapsed);
-if (hostModule) {
-hostModule.classList.toggle('ag-ledger-module-collapsed', isPluginCollapsed);
-}
 activeBadge.classList.toggle('hidden', isPluginCollapsed);
 compactSummary.classList.toggle('hidden', !isPluginCollapsed);
 }
@@ -216,9 +195,56 @@ e.stopPropagation();
 togglePluginCollapse();
 });
 updatePluginCollapse();
+function renderStatusBanner() {
+statusBanner.replaceChildren();
+statusBanner.classList.remove('is-error');
+statusBanner.setAttribute('role', 'status');
+if (loadError) {
+statusBanner.classList.add('is-error');
+const message = document.createElement('span');
+message.className = 'ag-ledger-status-text';
+message.textContent = `读取用量数据失败：${loadError}`;
+const retryBtn = document.createElement('button');
+retryBtn.type = 'button';
+retryBtn.className = 'ag-ledger-btn ag-ledger-retry-btn';
+retryBtn.textContent = '重试';
+retryBtn.addEventListener('click', () => {
+refreshSummary();
+});
+statusBanner.append(message, retryBtn);
+return;
+}
+if (isLoading || !state) {
+statusBanner.textContent = '正在扫描本地 Antigravity 用量记录...';
+return;
+}
+const summary = state.summary || state;
+const totalTokens = Number(summary?.totalTokens || 0);
+const costUsd = Number(summary?.costUsd || 0);
+const cov = summary?.coverage || {};
+const overallTokens = Number(summary?.overallTotalTokens ?? totalTokens);
+const overallCostUsd = Number(summary?.overallCostUsd ?? costUsd);
+const isSpecificAccount = accountFilter && accountFilter !== 'all' && accountFilter !== 'unattributed';
+if (accountFilter === 'all') {
+const tokenCoverage = cov.tokenCoveragePercent ?? 100;
+const costCoverage = cov.costCoveragePercent ?? 100;
+statusBanner.textContent = `自动多账号归属（实时心跳时间线 + 配额周期/日志锚点）· 已归属到具体账号：${tokenCoverage}% Tokens（${formatTokens(cov.attributedTokens)} / ${formatTokens(overallTokens)}）· ${costCoverage}% 费用（${formatCost(cov.attributedCostUsd)} / ${formatCost(overallCostUsd)}）；其余归入「历史汇总（未归属）」。`;
+} else if (accountFilter === 'unattributed') {
+statusBanner.textContent = '当前正在查看：历史汇总（未归属） — 仅包含未能通过心跳时间线、配额周期或日志锚点关联到具体账号的历史记录。';
+} else if (isSpecificAccount) {
+if (totalTokens === 0) {
+statusBanner.textContent = '该账号在所选区间暂无归属记录（切换至该账号使用 Antigravity 后将自动记录并归属用量）。';
+} else {
+const accShare = summary?.accounts?.find(a => a.email === accountFilter)?.percentageOfTotal || 0;
+statusBanner.textContent = `当前账号归属用量：${formatTokens(totalTokens)} Tokens · 折算费用 ${formatCost(costUsd)}（在当前区间占比 ${accShare}%）。`;
+}
+}
+}
 async function refreshSummary() {
 if (isLoading || isDisposed) return;
 isLoading = true;
+loadError = null;
+renderStatusBanner();
 try {
 const res = await ctx.backend.call('getSummary', {
 range: { start: startDate, end: endDate },
@@ -226,12 +252,21 @@ accountFilter
 });
 if (!isDisposed && res) {
 state = res;
-render();
 }
 } catch (err) {
 console.error('[ag-ledger] getSummary error:', err);
+if (!isDisposed) {
+loadError = err?.message || '读取用量数据失败';
+}
 } finally {
 isLoading = false;
+if (!isDisposed) {
+if (state) {
+render();
+} else {
+renderStatusBanner();
+}
+}
 }
 }
 startInput.addEventListener('change', () => {
@@ -246,31 +281,17 @@ accountSelect.addEventListener('change', () => {
 accountFilter = accountSelect.value;
 refreshSummary();
 });
-assignBtn.addEventListener('click', async () => {
-const targetEmail = assignSelect.value;
-if (!targetEmail || targetEmail === 'all' || targetEmail === 'unattributed' || !startDate || !endDate) return;
-try {
-const res = await ctx.backend.call('assignDateRange', {
-startDate,
-endDate,
-email: targetEmail
-});
-if (!isDisposed && res) {
-state = res;
-render();
-} else {
-await refreshSummary();
-}
-} catch (err) {
-console.error('[ag-ledger] assignDateRange error:', err);
-}
-});
 function render() {
 if (!state) return;
 const summary = state.summary || state;
 const discoveredAccounts = state.discoveredAccounts || [];
 const activeAccount = state.activeAccount || null;
-const attributionRules = state.attributionRules || state.ledger?.attributionRules || [];
+const totalTokens = Number(summary?.totalTokens || 0);
+const costUsd = Number(summary?.costUsd || 0);
+const inputTokens = Number(summary?.inputTokens || 0);
+const outputTokens = Number(summary?.outputTokens || 0);
+const cacheReadTokens = Number(summary?.cacheReadTokens || 0);
+const reasoningTokens = Number(summary?.reasoningTokens || 0);
 activeBadge.replaceChildren();
 if (activeAccount?.email) {
 activeBadge.className = 'ag-ledger-badge active';
@@ -285,9 +306,7 @@ activeBadge.textContent = '未检测到活跃账号';
 }
 activeBadge.classList.toggle('hidden', isPluginCollapsed);
 const currentSelected = accountSelect.value;
-const currentAssignSelected = assignSelect.value;
 accountSelect.replaceChildren();
-assignSelect.replaceChildren();
 const optAll = document.createElement('option');
 optAll.value = 'all';
 optAll.textContent = '全部 Antigravity 账号 (All Accounts)';
@@ -307,78 +326,11 @@ const opt = document.createElement('option');
 opt.value = acc.email;
 opt.textContent = label;
 accountSelect.append(opt);
-const assignOpt = document.createElement('option');
-assignOpt.value = acc.email;
-assignOpt.textContent = label;
-assignSelect.append(assignOpt);
 }
 accountSelect.value = currentSelected || accountFilter;
-const defaultAssignEmail = currentAssignSelected
-|| (accountFilter !== 'all' && accountFilter !== 'unattributed' ? accountFilter : '')
-|| activeAccount?.email
-|| normalizedAccounts[0]?.email
-|| '';
-if (defaultAssignEmail) {
-assignSelect.value = defaultAssignEmail;
-}
-assignBtn.disabled = normalizedAccounts.length === 0;
-rulesWrap.replaceChildren();
-if (Array.isArray(attributionRules) && attributionRules.length > 0) {
-rulesWrap.classList.remove('hidden');
-for (const rule of attributionRules) {
-const tag = document.createElement('span');
-tag.className = 'ag-ledger-tag';
-const tagText = document.createElement('span');
-tagText.textContent = `${rule.startDate} ~ ${rule.endDate} → ${rule.email}`;
-const removeBtn = document.createElement('button');
-removeBtn.type = 'button';
-removeBtn.className = 'ag-ledger-tag-btn';
-removeBtn.textContent = '×';
-removeBtn.title = '移除该区间归属规则';
-removeBtn.addEventListener('click', async () => {
-try {
-const res = await ctx.backend.call('removeDateRangeRule', {
-id: rule.id,
-startDate: rule.startDate,
-endDate: rule.endDate
-});
-if (!isDisposed && res) {
-state = res;
-render();
-} else {
-await refreshSummary();
-}
-} catch (err) {
-console.error('[ag-ledger] removeDateRangeRule error:', err);
-}
-});
-tag.append(tagText, removeBtn);
-rulesWrap.append(tag);
-}
-} else {
-rulesWrap.classList.add('hidden');
-}
-const isSpecificAccount = accountFilter && accountFilter !== 'all' && accountFilter !== 'unattributed';
-const totalTokens = summary?.totalTokens || 0;
-const costUsd = summary?.costUsd || 0;
-const inputTokens = summary?.inputTokens || 0;
-const outputTokens = summary?.outputTokens || 0;
-const cacheReadTokens = summary?.cacheReadTokens || 0;
-const reasoningTokens = summary?.reasoningTokens || 0;
 compactSummary.textContent = `${formatTokens(totalTokens)} · ${formatCost(costUsd)}`;
 compactSummary.classList.toggle('hidden', !isPluginCollapsed);
-if (accountFilter === 'all') {
-statusBanner.textContent = '已启用四层账号归属：实时心跳时间线 + 手动日期区间规则 + 配额重置周期回推（reset_time - 7d）；其余无法唯一定位的历史记录归入「历史汇总（未归属）」。';
-} else if (accountFilter === 'unattributed') {
-statusBanner.textContent = '当前正在查看：历史汇总（未归属） — 仅包含未能通过心跳时间线、手动区间规则或配额重置周期关联到具体账号的历史记录。';
-} else if (isSpecificAccount) {
-if (totalTokens === 0) {
-statusBanner.textContent = '该账号在所选区间暂无归属记录（切换至该账号使用 Antigravity 或使用上方「将所选区间归属到账号」即可归入用量）。';
-} else {
-const accShare = summary?.accounts?.find(a => a.email === accountFilter)?.percentageOfTotal || 0;
-statusBanner.textContent = `当前账号归属用量：${formatTokens(totalTokens)} Tokens · 折算费用 ${formatCost(costUsd)}（在当前区间占比 ${accShare}%）。`;
-}
-}
+renderStatusBanner();
 kpiGrid.replaceChildren();
 const cardTokens = document.createElement('div');
 cardTokens.className = 'ag-ledger-kpi-card';
@@ -573,28 +525,20 @@ render();
 refreshSummary();
 return {
 update(nextContext) {
-if (nextContext?.surface) {
+if (!nextContext) return;
+if (nextContext.surface) {
 root.className = `ag-ledger-root surface-${nextContext.surface}`;
-if (isPluginCollapsed) {
-root.classList.add('is-collapsed');
 }
+if (nextContext.visible !== undefined) {
+isVisible = nextContext.visible !== false;
 }
+root.classList.toggle('is-collapsed', isPluginCollapsed);
+root.classList.toggle('hidden', !isVisible);
 },
 dispose() {
 isDisposed = true;
 if (unsub) unsub();
-if (hostHead && onHeaderClick) {
-hostHead.removeEventListener('click', onHeaderClick);
-}
-if (headerRight && headerRight.parentNode) {
-headerRight.remove();
-}
-if (hostMeta) {
-hostMeta.style.display = '';
-}
-if (hostModule) {
-hostModule.classList.remove('ag-ledger-module-collapsed');
-}
+header.removeEventListener('click', onHeaderClick);
 root.remove();
 }
 };

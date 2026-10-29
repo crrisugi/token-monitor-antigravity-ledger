@@ -8,9 +8,9 @@
   },
   "version": "0.1.0",
   "description": {
-    "en": "Per-Google-account token usage, USD cost breakdown, and custom date-range attribution for Antigravity (Gemini & Claude/GPT models).",
-    "zh-TW": "按 Antigravity 切換登入的不同 Google 帳號與自訂日期區間統計全部模型（Gemini 與 Claude/GPT）的 Token 消耗與折算費用。",
-    "zh-CN": "按 Antigravity 切换登录的不同 Google 账号与自定义日期区间统计全部模型（Gemini 与 Claude/GPT）的 Token 消耗与折算费用。"
+    "en": "Per-Google-account token usage, USD cost breakdown, custom date-range filtering, and automatic multi-account attribution for Antigravity (Gemini & Claude/GPT models).",
+    "zh-TW": "按 Antigravity 切換登入的不同 Google 帳號與自訂日期區間統計全部模型（Gemini 與 Claude/GPT）的 Token 消耗與折算費用，並自動進行多帳號歸屬。",
+    "zh-CN": "按 Antigravity 切换登录的不同 Google 账号与自定义日期区间统计全部模型（Gemini 与 Claude/GPT）的 Token 消耗与折算费用，并自动进行多账号归属。"
   },
   "author": "crrisugi",
   "ui": "ui.mjs",
@@ -59,5 +59,5 @@
   "engines": {
     "tokenMonitor": ">=0.81.0"
   },
-  "homepage": "https://github.com/crrisugi/token-monitor-antigravity-ledger"
+  "homepage": "https://github.com/Javis603/token-monitor-plugins"
 }

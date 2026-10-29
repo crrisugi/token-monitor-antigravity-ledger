@@ -1,21 +1,24 @@
 # Antigravity Account Ledger
 
-Per-Google-account token usage, USD cost breakdown, and custom date-range attribution for Antigravity (Gemini & Claude/GPT models) in [Token Monitor](https://github.com/Javis603/token-monitor).
+Per-Google-account token usage, USD cost breakdown, custom date-range filtering, and automatic multi-account attribution for Antigravity (Gemini & Claude/GPT models) in Token Monitor.
+
+> Canonical source & community catalog distribution: [Javis603/token-monitor-plugins](https://github.com/Javis603/token-monitor-plugins) (PR #1).
 
 ## Compatibility and installation
 
-Requires Token Monitor **0.81.0 or later**. Import this repository folder or `.tmplugin` package through **Settings → Plugins → Install from file**, review it and enable it.
+Requires Token Monitor **0.81.0 or later**. Token Monitor 0.80.0 does not include the plugin runtime and refuses to install plugins. On 0.81.0+, install this plugin directly from the built-in **Token Monitor Community** directory, or import the complete plugin folder / `.tmplugin` package through **Settings → Plugins → Install from file**, review it and enable it.
 
 ## Features
 
-- **Automatic multi-account attribution**: Detects the active Google account from Antigravity's local `state.vscdb` (`antigravityAuthStatus` / `google.geminicodeassist`) and attributes session deltas to each account timeline automatically.
-- **Full model coverage**: Tracks both Gemini models (from local brain session logs) and non-Gemini models such as Claude Sonnet/Opus and GPT (from implicit trajectory protobufs and local quota snapshots).
+- **Automatic multi-account attribution**: Detects the active Google account from local Antigravity state and attributes usage through the active-account heartbeat timeline plus local quota reset windows and CLI/tool log anchors. Records it cannot match stay in a separate unattributed bucket.
+- **Attribution coverage**: Shows how many tokens and how much cost were attributed to specific accounts within the selected range, so partially attributed history stays transparent.
+- **Full model coverage**: Tracks Gemini models and non-Gemini models such as Claude Sonnet/Opus and GPT, separating Gemini, Claude/GPT, and Gemini 4 Argon quota pools.
 - **Custom date range & account filter**: Inspect token usage (Input, Output, Cache Read, Reasoning) and estimated USD cost for any `YYYY-MM-DD ~ YYYY-MM-DD` window and individual Google account.
-- **Collapsible Home module view**: Embeds directly into the Token Monitor Home stream with compact header collapse in the Home module header and an optional toggleable account-share comparison table.
+- **Self-contained Home view**: Renders its own header and collapse control inside the module instead of modifying the host Home layout, and includes an optional toggleable account-share comparison table.
 
 ## Data and privacy
 
-All data is read and persisted locally on your machine. No account credentials, OAuth tokens, or usage records are transmitted over the network.
+The plugin reads the following local sources only: Antigravity conversation SQLite databases under `~/.gemini/`, Antigravity `state.vscdb`, `~/.antigravity_tools`, and the local OAuth credential files `jetski-standalone-oauth-token`, `antigravity-oauth-token`, and `oauth_creds.json` — the credential files are only parsed locally to extract the account email. All data is read and persisted locally on your machine. No account credentials, OAuth tokens, or usage records are transmitted to any external network.
 
 ## License
 

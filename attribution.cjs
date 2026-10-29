@@ -5,9 +5,8 @@ const os = require('node:os');
 const scanner = require('./scanner.cjs');
 const { DatabaseSync, DEFAULT_LEDGER_FILENAME, DEFAULT_DB_CACHE_FILENAME, MODEL_ENUM_MAP, DISPLAY_NAME_TO_CANONICAL, MODEL_PRICING, normalizeEmail, normalizeDate, isAntigravityClient, getTempDir, getSharedDataDir, readJson, writeJsonAtomic, parseProto, fVal, fStr, unpackVarints, decodeTimestamp, parseUsageStats, resolveModelAndPrice, openConversationDbWithFallback, scanConversationDb, scanAllConversationDbs, extractEmailFromUserStatusValue, discoverFromTools, discoverCliLogWindows, discoverToolsTokenStatsWindows, discoverAccounts, discoverCurrentAccount, detectActiveAccount } = scanner;
 function quotaGroupForModel(modelId) { const m = String(modelId || '').trim().toLowerCase();
-if (m.startsWith('claude') || m.startsWith('gpt') || m.includes('claude') || m.includes('gpt')) {
-return '3p-weekly'; }
-if (m.startsWith('gemini') || m.includes('gemini') || m.includes('argon')) { return 'gemini-weekly'; }
+if (m.includes('claude') || m.includes('gpt')) { return '3p-weekly'; }
+if (m.includes('argon')) { return 'argon-weekly'; }
 return 'gemini-weekly'; }
 function toEpochMs(val) { if (val === null || val === undefined || val === '') return 0;
 if (typeof val === 'number' && Number.isFinite(val)) {
@@ -18,7 +17,7 @@ function buildQuotaAttributionWindows(accounts = [], options = {}) {
 const sourceAccounts = Array.isArray(accounts) && accounts.length > 0
 ? accounts
 : discoverFromTools(options).accounts;
-const byGroup = { 'gemini-weekly': [], '3p-weekly': [] };
+const byGroup = { 'gemini-weekly': [], '3p-weekly': [], 'argon-weekly': [] };
 const seenAccountGroup = new Set();
 for (const acc of sourceAccounts) { const email = normalizeEmail(typeof acc === 'string' ? acc : acc?.email);
 if (!email || !acc || typeof acc !== 'object') continue;
@@ -41,7 +40,9 @@ const disp = String(grp?.display_name || '').toLowerCase();
 for (const b of Array.isArray(grp?.buckets) ? grp.buckets : []) {
 const bid = String(b?.bucket_id || '').toLowerCase();
 const win = String(b?.window || '').toLowerCase();
-if (bid === 'gemini-weekly' || (win === 'weekly' && disp.includes('gemini'))) {
+if (bid === 'argon-weekly' || (win === 'weekly' && disp.includes('argon'))) {
+recordGroupStat('argon-weekly', b.remaining_fraction ?? b.remainingFraction, b.reset_time ?? b.resetTime);
+} else if (bid === 'gemini-weekly' || (win === 'weekly' && disp.includes('gemini'))) {
 recordGroupStat('gemini-weekly', b.remaining_fraction ?? b.remainingFraction, b.reset_time ?? b.resetTime);
 } else if (bid === '3p-weekly' || (win === 'weekly' && (disp.includes('claude') || disp.includes('gpt')))) {
 recordGroupStat('3p-weekly', b.remaining_fraction ?? b.remainingFraction, b.reset_time ?? b.resetTime); } } } }
@@ -66,26 +67,12 @@ byGroup.cliLogWindows = discoverCliLogWindows(options);
 byGroup.toolsUsageWindows = discoverToolsTokenStatsWindows(options);
 return byGroup; }
 function createDefaultLedger(activatedAt = new Date().toISOString()) { return { version: 1,
-featureActivatedAt: activatedAt, lastActiveAccount: null, timeline: [], attributionRules: [], sessionAccounts: {}
+featureActivatedAt: activatedAt, lastActiveAccount: null, timeline: [], sessionAccounts: {}
 }; }
-function normalizeAttributionRules(rules) { if (!Array.isArray(rules)) return [];
-const out = [];
-for (const r of rules) { if (!r || typeof r !== 'object') continue;
-const email = normalizeEmail(r.email || r.accountEmail);
-let startDate = normalizeDate(r.startDate || r.start);
-let endDate = normalizeDate(r.endDate || r.end);
-if (!email || email === 'all' || email === 'unattributed' || !startDate || !endDate) continue;
-if (startDate > endDate) { const tmp = startDate;
-startDate = endDate;
-endDate = tmp; }
-out.push({ id: r.id || `rule-${startDate}-${endDate}-${email}`, startDate, endDate, email,
-createdAt: r.createdAt || new Date().toISOString() }); }
-return out; }
 function normalizeLedger(loaded) { return { version: 1,
 featureActivatedAt: loaded?.featureActivatedAt || new Date().toISOString(),
 lastActiveAccount: loaded?.lastActiveAccount || null,
 timeline: Array.isArray(loaded?.timeline) ? loaded.timeline : [],
-attributionRules: normalizeAttributionRules(loaded?.attributionRules || loaded?.dateRangeRules),
 sessionAccounts: (loaded?.sessionAccounts && typeof loaded.sessionAccounts === 'object') ? loaded.sessionAccounts : {}
 }; }
 function loadLedger(ledgerFile) { const loaded = readJson(ledgerFile, null);
@@ -116,47 +103,14 @@ ledger.timeline.push({ email, startedAt: ts, endedAt: null, source });
 changed = true; } }
 if (changed && ledgerFile) { saveLedger(ledger, ledgerFile); }
 return { changed, ledger }; }
-function assignDateRange(args = {}, ledger, ledgerFile = null) {
-if (!ledger) throw new Error('Ledger is required');
-const email = normalizeEmail(args.email || args.accountEmail);
-let startDate = normalizeDate(args.startDate || args.start || args.range?.start);
-let endDate = normalizeDate(args.endDate || args.end || args.range?.end);
-if (!email || email === 'all' || email === 'unattributed') {
-throw new Error('A valid target account email is required'); }
-if (!startDate || !endDate) { throw new Error('Both startDate and endDate are required'); }
-if (startDate > endDate) { const tmp = startDate;
-startDate = endDate;
-endDate = tmp; }
-if (!Array.isArray(ledger.attributionRules)) { ledger.attributionRules = []; }
-const nowIso = new Date().toISOString();
-let rule = ledger.attributionRules.find((r) => r.startDate === startDate && r.endDate === endDate);
-if (rule) { rule.email = email;
-rule.createdAt = nowIso; } else { rule = { id: args.id || `rule-${startDate}-${endDate}-${Date.now()}`, startDate,
-endDate, email, createdAt: nowIso };
-ledger.attributionRules.push(rule); }
-if (ledgerFile) { saveLedger(ledger, ledgerFile); }
-return { changed: true, rule, ledger }; }
-function removeDateRangeRule(args = {}, ledger, ledgerFile = null) {
-if (!ledger || !Array.isArray(ledger.attributionRules)) { return { changed: false, ledger }; }
-const id = args.id || args.ruleId || null;
-const startDate = normalizeDate(args.startDate || args.start);
-const endDate = normalizeDate(args.endDate || args.end);
-const beforeLen = ledger.attributionRules.length;
-ledger.attributionRules = ledger.attributionRules.filter((r) => { if (id && r.id === id) return false;
-if (!id && startDate && endDate && r.startDate === startDate && r.endDate === endDate) return false;
-return true; });
-const changed = ledger.attributionRules.length !== beforeLen;
-if (changed && ledgerFile) { saveLedger(ledger, ledgerFile); }
-return { changed, ledger }; }
 function attributeCallRecord(call, options = {}) { const ledger = options.ledger;
 const quotaWindows = options.quotaWindows;
 const tsMs = typeof call?.timestampMs === 'number' && Number.isFinite(call.timestampMs)
 ? call.timestampMs
 : toEpochMs(call?.callTimestamp ? call.callTimestamp * 1000 : (call?.timestamp || call?.startedAt || call?.day));
-const callDay = call?.day || normalizeDate(tsMs);
 const convId = call?.conversationId || call?.sessionId;
 if (convId && ledger?.sessionAccounts?.[convId]?.source === 'manual' && ledger.sessionAccounts[convId].email) {
-return { email: normalizeEmail(ledger.sessionAccounts[convId].email), source: 'manual', layer: 2,
+return { email: normalizeEmail(ledger.sessionAccounts[convId].email), source: 'manual', layer: 1,
 isUnattributed: false }; }
 if (tsMs > 0 && Array.isArray(ledger?.timeline)) { for (let i = ledger.timeline.length - 1; i >= 0; i -= 1) {
 const interval = ledger.timeline[i];
@@ -164,32 +118,31 @@ const startMs = toEpochMs(interval?.startedAt);
 const endMs = interval?.endedAt ? toEpochMs(interval.endedAt) : Infinity;
 if (startMs > 0 && startMs <= tsMs && tsMs <= endMs) { return { email: normalizeEmail(interval.email),
 source: interval.source || 'timeline', layer: 1, isUnattributed: false }; } } }
-if (callDay && Array.isArray(ledger?.attributionRules)) {
-for (let i = ledger.attributionRules.length - 1; i >= 0; i -= 1) { const rule = ledger.attributionRules[i];
-if (rule.startDate <= callDay && callDay <= rule.endDate) { return { email: normalizeEmail(rule.email),
-source: 'attribution_rule', ruleId: rule.id, layer: 2, isUnattributed: false }; } } }
 if (tsMs > 0 && quotaWindows && typeof quotaWindows === 'object') {
 if (call?.source === 'antigravity-cli' && Array.isArray(quotaWindows.cliLogWindows)) {
 for (let i = quotaWindows.cliLogWindows.length - 1; i >= 0; i -= 1) {
 const cw = quotaWindows.cliLogWindows[i];
 if (cw.startMs <= tsMs && tsMs <= cw.endMs) { return { email: normalizeEmail(cw.email),
-source: 'cli_log', layer: 3, isUnattributed: false }; } } }
+source: 'cli_log', layer: 2, isUnattributed: false }; } } }
 if (Array.isArray(quotaWindows.toolsUsageWindows)) {
 for (let i = quotaWindows.toolsUsageWindows.length - 1; i >= 0; i -= 1) {
 const tw = quotaWindows.toolsUsageWindows[i];
 if (tw.startMs <= tsMs && tsMs <= tw.endMs) { return { email: normalizeEmail(tw.email),
-source: 'tools_token_stats', layer: 3, isUnattributed: false }; } } }
+source: 'tools_token_stats', layer: 2, isUnattributed: false }; } } }
 const groupKey = quotaGroupForModel(call?.model);
 const candidateGroups = [groupKey];
+const hasArgonWindows = Array.isArray(quotaWindows['argon-weekly']) && quotaWindows['argon-weekly'].length > 0;
+if (groupKey === 'argon-weekly' && !hasArgonWindows) { candidateGroups.push('gemini-weekly'); }
 const mLower = String(call?.model || '').toLowerCase();
-if (!mLower.startsWith('gemini') && !mLower.startsWith('claude') && !mLower.startsWith('gpt')) {
+if (groupKey !== 'argon-weekly'
+ && !mLower.startsWith('gemini') && !mLower.startsWith('claude') && !mLower.startsWith('gpt')) {
 candidateGroups.push(groupKey === 'gemini-weekly' ? '3p-weekly' : 'gemini-weekly'); }
 for (const gk of candidateGroups) { const groupList = Array.isArray(quotaWindows[gk]) ? quotaWindows[gk] : [];
 const consumedInGroup = groupList.filter((w) => w.consumed);
 const matchingConsumed = consumedInGroup.filter((w) => w.startMs <= tsMs && tsMs <= w.endMs);
 if (matchingConsumed.length === 1) { return { email: normalizeEmail(matchingConsumed[0].email),
-source: 'quota_anchor', layer: 3, isUnattributed: false }; } } }
-return { email: 'unattributed', source: 'unattributed', layer: 4, isUnattributed: true }; }
+source: 'quota_anchor', layer: 2, isUnattributed: false }; } } }
+return { email: 'unattributed', source: 'unattributed', layer: 3, isUnattributed: true }; }
 function emptyMetrics() { return { tokens: 0, costUsd: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0,
 cacheWriteTokens: 0, reasoningTokens: 0 }; }
 function emptyAccountBucket(email, displayName = '') { return { email,
@@ -360,10 +313,6 @@ if (interval.startedAt <= startedAt && (!interval.endedAt || startedAt <= interv
 const source = interval.source || 'timeline';
 const normEmail = normalizeEmail(interval.email);
 return { email: normEmail, source, isUnattributed: false }; } } }
-if (sessionDate && Array.isArray(ledger.attributionRules)) {
-for (let i = ledger.attributionRules.length - 1; i >= 0; i -= 1) { const rule = ledger.attributionRules[i];
-if (rule.startDate <= sessionDate && sessionDate <= rule.endDate) { return { email: normalizeEmail(rule.email),
-source: 'attribution_rule', isUnattributed: false }; } } }
 if (startedAt && options.quotaWindows) {
 const modelKeys = Object.keys(session?.periods?.allTime?.models || session?.models || {});
 const primaryModel = modelKeys[0] || session?.modelId || session?.model || 'gemini-3.8-flash';
@@ -418,8 +367,8 @@ target.reasoningTokens += m.reasoningTokens || 0; } }
 module.exports = {
   extractObsMetrics, addUsageToBucket,
   quotaGroupForModel, toEpochMs, buildQuotaAttributionWindows, createDefaultLedger,
-  normalizeAttributionRules, normalizeLedger, loadLedger, saveLedger, recordAccountHeartbeat,
-  assignDateRange, removeDateRangeRule, attributeCallRecord,
+  normalizeLedger, loadLedger, saveLedger, recordAccountHeartbeat,
+  attributeCallRecord,
   emptyMetrics, emptyAccountBucket, cloneMetrics, hasActiveTodayPeriod,
   extractSessionTimestamp, resolveSessionDate, extractSessionMetrics, subtractMetrics,
   syncActiveAccountSessions, attributeSession

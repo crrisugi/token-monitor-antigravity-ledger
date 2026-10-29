@@ -39,17 +39,30 @@ const MODEL_PRICING = Object.freeze({
 'claude-opus-5-5': { input: 4.0, cacheRead: 0.2, cacheWrite: 5.0, output: 20.0 },
 'claude-sonnet-5-5': { input: 2.0, cacheRead: 0.1, cacheWrite: 2.5, output: 10.0 } });
 function normalizeEmail(value) { return typeof value === 'string' ? value.trim().toLowerCase() : ''; }
-function normalizeDate(value) { if (!value) return '';
+function localDayKey(date = new Date()) {
+const y = date.getFullYear();
+const m = String(date.getMonth() + 1).padStart(2, '0');
+const d = String(date.getDate()).padStart(2, '0');
+return `${y}-${m}-${d}`; }
+function normalizeDate(value) {
+if (value === null || value === undefined || value === '') return '';
+if (typeof value === 'string') {
+const trimmed = value.trim();
+if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+const parsed = Date.parse(trimmed);
+if (Number.isFinite(parsed)) return localDayKey(new Date(parsed));
+return trimmed.slice(0, 10); }
 if (typeof value === 'number' && Number.isFinite(value)) {
 const ms = value > 20_000_000_000 ? value : value * 1000;
-return new Date(ms).toISOString().slice(0, 10); }
-return String(value).slice(0, 10); }
+return localDayKey(new Date(ms)); }
+if (value instanceof Date && !Number.isNaN(value.getTime())) {
+return localDayKey(value); }
+return ''; }
 function isAntigravityClient(client) { const c = String(client || '').trim().toLowerCase();
 return c === 'antigravity' || c === 'antigravity-cli' || c === 'antigravity-ide' || c === 'antigravity-extension';
 }
 function getTempDir() { const custom = process.env.TEMP || process.env.TMP;
 if (custom && fs.existsSync(custom)) return custom;
-if (fs.existsSync('G:\\Temp')) return 'G:\\Temp';
 return os.tmpdir(); }
 function getSharedDataDir() {
 if (process.env.TOKEN_MONITOR_SHARED_DIR) return process.env.TOKEN_MONITOR_SHARED_DIR;
@@ -285,7 +298,7 @@ return nonZero; }
 module.exports = {
   DatabaseSync, DEFAULT_LEDGER_FILENAME, DEFAULT_DB_CACHE_FILENAME, GLOBAL_DB_SCAN_CACHE,
   MODEL_ENUM_MAP, DISPLAY_NAME_TO_CANONICAL, MODEL_PRICING,
-  normalizeEmail, normalizeDate, isAntigravityClient, getTempDir, getSharedDataDir, readJson, writeJsonAtomic,
+  normalizeEmail, localDayKey, normalizeDate, isAntigravityClient, getTempDir, getSharedDataDir, readJson, writeJsonAtomic,
   parseProto, fVal, fStr, unpackVarints, decodeTimestamp, decodeModelEnumPlaceholder, parseUsageStats,
   walChecksum, inspectWalBytes, resolveCanonicalPricingKey, resolveModelAndPrice, extractRetryEntries
 };

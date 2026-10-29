@@ -208,10 +208,22 @@ return rawCalls;
 } finally { handle.close(); } }
 function getDefaultConversationSources(homeDir = os.homedir()) {
 const cliBase = process.env.GEMINI_CLI_HOME || path.join(homeDir, '.gemini', 'antigravity-cli');
-return [ { source: 'antigravity-ide', dir: path.join(homeDir, '.gemini', 'antigravity-ide', 'conversations') },
-{ source: 'antigravity', dir: path.join(homeDir, '.gemini', 'antigravity', 'conversations') },
-{ source: 'antigravity-cli', dir: path.join(cliBase, 'conversations') }
-]; }
+const candidates = [
+{ source: 'antigravity', root: process.env.ANTIGRAVITY_HOME },
+{ source: 'antigravity', root: process.env.ANTIGRAVITY_DATA_DIR },
+{ source: 'antigravity-ide', root: path.join(homeDir, '.gemini', 'antigravity-ide') },
+{ source: 'antigravity', root: path.join(homeDir, '.gemini', 'antigravity') },
+{ source: 'antigravity-backup', root: path.join(homeDir, '.gemini', 'antigravity-backup') },
+{ source: 'antigravity-cli', root: cliBase }
+];
+const sources = [];
+const seen = new Set();
+for (const candidate of candidates) { if (typeof candidate.root !== 'string' || !candidate.root.trim()) continue;
+const dir = path.join(candidate.root.trim(), 'conversations');
+if (seen.has(dir)) continue;
+seen.add(dir);
+sources.push({ source: candidate.source, dir }); }
+return sources; }
 function getDbFingerprint(dbPath) { try { const st = fs.statSync(dbPath);
 let walMtimeMs = 0;
 let walSize = 0;
@@ -265,7 +277,7 @@ const dedupByKey = new Map();
 for (const rec of rawRecords) { const rid = rec.responseId;
 const dkey = rid
 ? `rid:${rec.apiProvider || 0}:${rid}`
-: `no_rid:${rec.dbPath}:${rec.originTable}:${rec.genIdx ?? -1}:${rec.stepIdx ?? -1}:${rec.attemptIndex ?? 0}`;
+: `no_rid:${rec.conversationId}:${rec.originTable}:${rec.genIdx ?? -1}:${rec.stepIdx ?? -1}:${rec.attemptIndex ?? 0}`;
 if (!dedupByKey.has(dkey)) { dedupByKey.set(dkey, { ...rec }); } else { const existing = dedupByKey.get(dkey);
 const existingIsPlaceholder = !existing.model || existing.model === 'unknown' || existing.model.startsWith('MODEL_');
 const recHasBetterModel = rec.model && rec.model !== 'unknown' && !rec.model.startsWith('MODEL_');
