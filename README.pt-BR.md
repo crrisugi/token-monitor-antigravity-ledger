@@ -11,7 +11,6 @@ Requer o Token Monitor **0.81.0 ou superior**. O Token Monitor 0.80.0 não inclu
 ## Recursos
 
 - **Atribuição automática entre contas**: detecta a conta Google ativa a partir do estado local do Antigravity e atribui o uso pela linha do tempo de heartbeat da conta ativa, pelas janelas locais de redefinição de cota e por âncoras de logs da CLI/ferramentas. Registros sem correspondência ficam em um bucket não atribuído separado.
-- **Cobertura de atribuição**: mostra a proporção de tokens e custo atribuídos a contas específicas no intervalo selecionado, mantendo o histórico parcialmente atribuído transparente.
 - **Cobertura completa de modelos**: acompanha modelos Gemini e não Gemini, como Claude Sonnet/Opus e GPT, separando os pools de cota Gemini, Claude/GPT e Gemini 4 Argon.
 - **Intervalo de datas e filtro de conta personalizados**: consulte tokens de entrada, saída, leitura de cache e raciocínio, além do custo estimado em USD, para qualquer janela `YYYY-MM-DD ~ YYYY-MM-DD` e conta Google individual.
 - **Visualização Home independente**: renderiza seu próprio cabeçalho e controle de recolhimento dentro do módulo, sem modificar o layout Home do host, e inclui uma tabela opcional de comparação de uso por conta.

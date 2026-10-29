@@ -6,16 +6,26 @@ const proto = require('./protobuf.cjs');
 const {
   DatabaseSync, DEFAULT_LEDGER_FILENAME, DEFAULT_DB_CACHE_FILENAME, GLOBAL_DB_SCAN_CACHE,
   MODEL_ENUM_MAP, DISPLAY_NAME_TO_CANONICAL, MODEL_PRICING,
-  normalizeEmail, normalizeDate, isAntigravityClient, getTempDir, getSharedDataDir, readJson, writeJsonAtomic,
+  normalizeEmail, normalizeDate, toEpochMs, isAntigravityClient, getTempDir, getSharedDataDir, readJson, writeJsonAtomic,
   parseProto, fVal, fStr, unpackVarints, decodeTimestamp, decodeModelEnumPlaceholder, parseUsageStats,
   walChecksum, inspectWalBytes, resolveCanonicalPricingKey, resolveModelAndPrice, extractRetryEntries
 } = proto;
+const DB_CACHE_VERSION = 2;
+function usageSignature(usage) { if (!usage) return '';
+return [usage.modelEnum || 0, usage.inputTokens || 0, usage.outputTokens || 0, usage.cacheReadTokens || 0,
+usage.cacheWriteTokens || 0, usage.thinkingTokens || 0, usage.responseId || ''].join(':'); }
+function callUsageSignature(record) { if (!record) return '';
+return [record.modelEnum || 0, record.inputTokens || 0, record.outputTokens || 0, record.cacheReadTokens || 0,
+record.cacheWriteTokens || 0, record.reasoningTokens || 0].join(':'); }
 function openConversationDbWithFallback(dbPath) { if (!DatabaseSync || !fs.existsSync(dbPath)) return null;
-try { const db = new DatabaseSync(dbPath, { readOnly: true });
+let db = null;
+try { db = new DatabaseSync(dbPath, { readOnly: true });
 try { db.exec('PRAGMA busy_timeout = 250'); } catch (_) {}
 try { db.exec('PRAGMA query_only = ON'); } catch (_) {}
 db.prepare('SELECT 1 FROM sqlite_master LIMIT 1').get();
-return { db, close() { try { db.close(); } catch (_) {} } }; } catch (_) { let tmpDir = null;
+return { db, close() { try { db.close(); } catch (_) {} } }; } catch (_) {
+if (db) { try { db.close(); } catch (_) {} }
+let tmpDir = null;
 try { tmpDir = fs.mkdtempSync(path.join(getTempDir(), 'ag-db-snap-'));
 const snapDb = path.join(tmpDir, path.basename(dbPath));
 fs.copyFileSync(dbPath, snapDb);
@@ -25,19 +35,19 @@ if (walStat.size > 0) { const snapWal = `${snapDb}-wal`;
 fs.copyFileSync(walPath, snapWal);
 let expectedPageSize = 0;
 try { const fd = fs.openSync(snapDb, 'r');
-const hdr = Buffer.alloc(100);
+try { const hdr = Buffer.alloc(100);
 fs.readSync(fd, hdr, 0, 100, 0);
-fs.closeSync(fd);
 if (hdr.subarray(0, 16).toString('utf8') === 'SQLite format 3\0') { const rawPs = hdr.readUInt16BE(16);
-expectedPageSize = rawPs === 1 ? 65536 : rawPs; } } catch (_) {}
+expectedPageSize = rawPs === 1 ? 65536 : rawPs; } } finally { fs.closeSync(fd); } } catch (_) {}
 const wbytes = fs.readFileSync(snapWal);
 const walInfo = inspectWalBytes(wbytes, expectedPageSize);
 if (walInfo.validConsistentWal && walInfo.committedEndOffset >= 32) {
-fs.truncateSync(snapWal, walInfo.committedEndOffset); } } }
-const db = new DatabaseSync(snapDb, { readOnly: true });
-try { db.exec('PRAGMA busy_timeout = 250'); } catch (_) {}
-try { db.exec('PRAGMA query_only = ON'); } catch (_) {}
-return { db, close() { try { db.close(); } catch (_) {}
+fs.truncateSync(snapWal, walInfo.committedEndOffset);
+} else { try { fs.unlinkSync(snapWal); } catch (_) {} } } }
+const snapDbHandle = new DatabaseSync(snapDb, { readOnly: true });
+try { snapDbHandle.exec('PRAGMA busy_timeout = 250'); } catch (_) {}
+try { snapDbHandle.exec('PRAGMA query_only = ON'); } catch (_) {}
+return { db: snapDbHandle, close() { try { snapDbHandle.close(); } catch (_) {}
 if (tmpDir) { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {} } } }; } catch (_) {
 if (tmpDir) { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {} }
 return null; } } }
@@ -86,6 +96,8 @@ if (genIdxRef !== null && genIdxRef !== undefined) {
 if (!stepsByGenIdx.has(genIdxRef)) stepsByGenIdx.set(genIdxRef, []);
 stepsByGenIdx.get(genIdxRef).push(stepObj); } } } catch (_) {}
 const genUsageByRespId = new Set();
+const consumedStepAttempts = new Map();
+const consumedStepSignatures = new Map();
 const genModelByIdx = new Map();
 let lastConvModel = null;
 const rawCalls = [];
@@ -148,10 +160,15 @@ callTs = stepsByIdx.get(gidx).createdAt;
 matchedStepIdx = gidx;
 alignmentMode = 'both'; }
 if (callTs === null && legacyChatStartTs !== null) { callTs = legacyChatStartTs; }
+if (matchedStepIdx !== null) {
+const signature = usageSignature(au);
+consumedStepAttempts.set(`${matchedStepIdx}:${att.attemptIndex || 0}`, signature);
+if (!consumedStepSignatures.has(matchedStepIdx)) consumedStepSignatures.set(matchedStepIdx, new Set());
+consumedStepSignatures.get(matchedStepIdx).add(signature); }
 const effEnum = au.modelEnum || cmModelEnum;
-const mp = resolveModelAndPrice({ responseModel: respModel || lastConvModel, displayName: dispName, modelEnum: effEnum,
-inputTokens: au.inputTokens, cacheReadTokens: au.cacheReadTokens, cacheWriteTokens: au.cacheWriteTokens,
-outputTokens: au.outputTokens });
+const mp = resolveModelAndPrice({ responseModel: respModel, displayName: dispName, modelEnum: effEnum,
+fallbackModel: lastConvModel, inputTokens: au.inputTokens, cacheReadTokens: au.cacheReadTokens,
+cacheWriteTokens: au.cacheWriteTokens, outputTokens: au.outputTokens });
 if (mp.model && mp.model !== 'unknown' && !mp.model.startsWith('MODEL_')) {
 lastConvModel = mp.model;
 genModelByIdx.set(gidx, mp.model); }
@@ -171,12 +188,16 @@ for (const att of stepAttempts) { const au = att.usage;
 if (!au || !au.nonZero) continue;
 const rid = au.responseId || null;
 if (rid && genUsageByRespId.has(`${au.apiProvider || 0}:${rid}`)) continue;
+const signature = usageSignature(au);
+const attemptKey = `${sidx}:${att.attemptIndex || 0}`;
+if (consumedStepAttempts.get(attemptKey) === signature
+|| consumedStepSignatures.get(sidx)?.has(signature)) continue;
 const effEnum = au.modelEnum || stepObj.generatorModelEnum || stepObj.requestedModelEnum;
 const refModel = (stepObj.genIdxRef !== null && stepObj.genIdxRef !== undefined)
 ? genModelByIdx.get(stepObj.genIdxRef)
 : null;
 const fallbackModel = (!effEnum || !MODEL_ENUM_MAP[effEnum]) ? (refModel || lastConvModel || null) : null;
-const mp = resolveModelAndPrice({ responseModel: fallbackModel, displayName: null, modelEnum: effEnum,
+const mp = resolveModelAndPrice({ fallbackModel, displayName: null, modelEnum: effEnum,
 inputTokens: au.inputTokens, cacheReadTokens: au.cacheReadTokens, cacheWriteTokens: au.cacheWriteTokens,
 outputTokens: au.outputTokens });
 rawCalls.push({ source: sourceName, conversationId, dbPath, originTable: 'steps', alignmentMode: 'step_only',
@@ -240,14 +261,16 @@ const sources = Array.isArray(options.conversationSources)
 ? options.conversationDirs.map((dir) => (typeof dir === 'string' ? { source: 'antigravity', dir } : dir))
 : getDefaultConversationSources(homeDir));
 const cacheFile = options.cacheFile || (options.dataDirectory ? path.join(options.dataDirectory, DEFAULT_DB_CACHE_FILENAME) : null);
-let diskCache = { version: 1, entries: {} };
-if (cacheFile && fs.existsSync(cacheFile)) { const loaded = readJson(cacheFile, null);
-if (loaded && loaded.entries && typeof loaded.entries === 'object') { diskCache = loaded; }
-} else if (!options.homeDir && !options.conversationDirs && !options.conversationSources) {
+function loadDiskCache(filePath) { const loaded = readJson(filePath, null);
+if (!loaded || loaded.version !== DB_CACHE_VERSION || !loaded.entries || typeof loaded.entries !== 'object') return null;
+const entries = {};
+for (const [dbPath, entry] of Object.entries(loaded.entries)) {
+if (entry && typeof entry === 'object' && typeof entry.key === 'string' && Array.isArray(entry.calls)) { entries[dbPath] = entry; } }
+return { version: DB_CACHE_VERSION, entries }; }
+let diskCache = (cacheFile ? loadDiskCache(cacheFile) : null) || { version: DB_CACHE_VERSION, entries: {} };
+if (!cacheFile && !options.homeDir && !options.conversationDirs && !options.conversationSources) {
 const sharedCacheFile = path.join(getSharedDataDir(), 'plugin-data', 'antigravity-account-ledger', DEFAULT_DB_CACHE_FILENAME);
-if (fs.existsSync(sharedCacheFile)) { const loaded = readJson(sharedCacheFile, null);
-if (loaded && loaded.entries && typeof loaded.entries === 'object') {
-diskCache = { version: 1, entries: { ...loaded.entries } }; } } }
+diskCache = loadDiskCache(sharedCacheFile) || diskCache; }
 let cacheChanged = false;
 const rawRecords = [];
 for (const src of sources) { if (!src || !src.dir || !fs.existsSync(src.dir)) continue;
@@ -265,6 +288,7 @@ const diskHit = diskCache.entries[dbPath];
 if (diskHit && diskHit.key === fp.key && Array.isArray(diskHit.calls)) { GLOBAL_DB_SCAN_CACHE.set(dbPath, diskHit);
 rawRecords.push(...diskHit.calls);
 continue; }
+
 const calls = scanConversationDb(dbPath, src.source || 'antigravity');
 const entry = { key: fp.key, mtimeMs: fp.mtimeMs, size: fp.size, walMtimeMs: fp.walMtimeMs, walSize: fp.walSize,
 calls };
@@ -277,11 +301,11 @@ const dedupByKey = new Map();
 for (const rec of rawRecords) { const rid = rec.responseId;
 const dkey = rid
 ? `rid:${rec.apiProvider || 0}:${rid}`
-: `no_rid:${rec.conversationId}:${rec.originTable}:${rec.genIdx ?? -1}:${rec.stepIdx ?? -1}:${rec.attemptIndex ?? 0}`;
+: `no_rid:${rec.conversationId}:${rec.genIdx ?? -1}:${rec.stepIdx ?? -1}:${rec.attemptIndex ?? 0}:${callUsageSignature(rec)}`;
 if (!dedupByKey.has(dkey)) { dedupByKey.set(dkey, { ...rec }); } else { const existing = dedupByKey.get(dkey);
 const existingIsPlaceholder = !existing.model || existing.model === 'unknown' || existing.model.startsWith('MODEL_');
 const recHasBetterModel = rec.model && rec.model !== 'unknown' && !rec.model.startsWith('MODEL_');
-if ((existingIsPlaceholder && recHasBetterModel) || (existing.originTable === 'steps' && rec.originTable === 'gen_metadata' && recHasBetterModel)) {
+if (existingIsPlaceholder && recHasBetterModel) {
 existing.model = rec.model;
 existing.modelDisplayName = rec.modelDisplayName || existing.modelDisplayName;
 existing.costUsd = rec.costUsd; }
@@ -449,11 +473,11 @@ const windows = [];
 try { if (!fs.existsSync(logDir)) return windows;
 const files = fs.readdirSync(logDir).filter((f) => f.startsWith('cli-') && f.endsWith('.log')).sort();
 for (const file of files) { const fullPath = path.join(logDir, file);
+let fd = null;
 try { const st = fs.statSync(fullPath);
-const fd = fs.openSync(fullPath, 'r');
+fd = fs.openSync(fullPath, 'r');
 const buf = Buffer.alloc(Math.min(32768, st.size || 0));
 fs.readSync(fd, buf, 0, buf.length, 0);
-fs.closeSync(fd);
 const m = buf.toString('utf8').match(CLI_AUTH_RE);
 if (!m) continue;
 const fnMatch = file.match(CLI_LOG_FN_RE);
@@ -462,8 +486,9 @@ const [, mo, da, hh, mm, ss, us, rawEmail] = m;
 const email = normalizeEmail(rawEmail);
 if (!email) continue;
 const startMs = new Date(year, Number(mo) - 1, Number(da), Number(hh), Number(mm), Number(ss), Math.floor(Number(us) / 1000)).getTime();
-const endMs = Math.max(startMs + 60_000, Math.round(st.mtimeMs) + 60_000);
-windows.push({ email, startMs: startMs - 5_000, endMs, source: 'cli_log' }); } catch (_) {} } } catch (_) {}
+const endMs = Math.min(Math.max(startMs + 60_000, Math.round(st.mtimeMs) + 60_000), startMs + 24 * 60 * 60 * 1000);
+windows.push({ email, startMs: startMs - 5_000, endMs, source: 'cli_log' }); } catch (_) {} finally {
+if (fd !== null) { try { fs.closeSync(fd); } catch (_) {} } } } } catch (_) {}
 return windows; }
 function discoverToolsTokenStatsWindows(options = {}) { if (!DatabaseSync) return [];
 const home = options.homeDir || os.homedir();
@@ -473,7 +498,11 @@ try { if (!fs.existsSync(dbPath)) return windows;
 const db = new DatabaseSync(dbPath, { readOnly: true });
 try { try { db.exec('PRAGMA busy_timeout = 250'); } catch (_) {}
 try { db.exec('PRAGMA query_only = ON'); } catch (_) {}
-const rows = db.prepare('SELECT timestamp, account_email, total_tokens, input_tokens, output_tokens FROM token_usage WHERE (total_tokens > 0 OR input_tokens > 0 OR output_tokens > 0) ORDER BY timestamp').all();
+let sql = 'SELECT timestamp, account_email, total_tokens FROM token_usage WHERE total_tokens > 0 ORDER BY timestamp';
+try { const columns = new Set(db.prepare('PRAGMA table_info(token_usage)').all().map((c) => String(c.name)));
+if (columns.has('input_tokens') && columns.has('output_tokens')) {
+sql = 'SELECT timestamp, account_email, total_tokens, input_tokens, output_tokens FROM token_usage WHERE (total_tokens > 0 OR input_tokens > 0 OR output_tokens > 0) ORDER BY timestamp'; } } catch (_) {}
+const rows = db.prepare(sql).all();
 for (const r of rows) { const email = normalizeEmail(r?.account_email);
 const tsSec = Number(r?.timestamp || 0);
 if (!email || !tsSec) continue;
@@ -491,6 +520,9 @@ seen.add(email);
 accounts.push({ email, displayName: (entry?.accountLabel && String(entry.accountLabel).trim()) || email,
 source: 'managed', enabled: entry?.enabled !== false }); }
 return accounts; }
+function quotaFreshnessMs(quota, fallbackMs = 0) { const explicit = toEpochMs(quota?.last_updated ?? quota?.lastUpdated ?? 0);
+if (explicit > 0) return explicit;
+return fallbackMs > 0 ? fallbackMs : 0; }
 function discoverAccounts(options = {}) { const map = new Map();
 function addAccount(acc) { const email = normalizeEmail(acc?.email);
 if (!email) return;
@@ -501,10 +533,17 @@ createdAt: acc.createdAt || null, lastUsed: acc.lastUsed || null, quota: acc.quo
 if (source && !existing.sources.includes(source)) { existing.sources.push(source); }
 if (acc.displayName && acc.displayName !== email && (!existing.displayName || existing.displayName === email)) {
 existing.displayName = acc.displayName; }
-if (acc.createdAt && (!existing.createdAt || acc.createdAt < existing.createdAt)) {
-existing.createdAt = acc.createdAt; }
-if (acc.lastUsed && (!existing.lastUsed || acc.lastUsed > existing.lastUsed)) { existing.lastUsed = acc.lastUsed; }
-if (acc.quota && !existing.quota) { existing.quota = acc.quota; } } }
+if (acc.createdAt) { const createdMs = toEpochMs(acc.createdAt);
+const existingCreatedMs = toEpochMs(existing.createdAt);
+if (createdMs > 0 && (!existing.createdAt || existingCreatedMs === 0 || createdMs < existingCreatedMs)) {
+existing.createdAt = acc.createdAt; } }
+if (acc.lastUsed) { const lastMs = toEpochMs(acc.lastUsed);
+const existingLastMs = toEpochMs(existing.lastUsed);
+if (lastMs > 0 && lastMs > existingLastMs) { existing.lastUsed = acc.lastUsed; } }
+if (acc.quota) { if (!existing.quota) { existing.quota = acc.quota; } else {
+const incomingFreshness = quotaFreshnessMs(acc.quota, toEpochMs(acc.lastUsed));
+const existingFreshness = quotaFreshnessMs(existing.quota, toEpochMs(existing.lastUsed));
+if (incomingFreshness > existingFreshness) { existing.quota = acc.quota; } } } } }
 const tools = discoverFromTools(options);
 for (const a of tools.accounts) addAccount(a);
 const vscdb = discoverFromVscdb(options);
@@ -514,11 +553,14 @@ for (const a of googleAccs.accounts) addAccount(a);
 const oauthAccs = discoverFromOAuthTokens(options);
 for (const a of oauthAccs.accounts) addAccount(a);
 for (const w of discoverCliLogWindows(options)) addAccount({ email: w.email, source: 'cli_log', lastUsed: Math.round(w.endMs / 1000) });
+for (const w of discoverToolsTokenStatsWindows(options)) {
+if (w.email && w.email !== 'unattributed') { addAccount({ email: w.email, source: 'tools_token_stats', lastUsed: Math.round(w.endMs / 1000) }); } }
 const managed = discoverFromManaged(options.settings);
 for (const a of managed) addAccount(a);
 return Array.from(map.values()); }
 function discoverCurrentAccount(options = {}) { const tools = discoverFromTools(options);
-if (tools.activeEmail) { return { email: tools.activeEmail, source: 'antigravity_tools' }; }
+const disabledEmails = new Set(tools.accounts.filter((a) => a.disabled === true).map((a) => a.email));
+if (tools.activeEmail && !disabledEmails.has(tools.activeEmail)) { return { email: tools.activeEmail, source: 'antigravity_tools' }; }
 const vscdb = discoverFromVscdb(options);
 if (vscdb.ideActiveEmail) { return { email: vscdb.ideActiveEmail, source: 'antigravity_ide_vscdb' }; }
 const googleAccs = discoverFromGoogleAccountsJson(options);
@@ -527,7 +569,7 @@ const oauthAccs = discoverFromOAuthTokens(options);
 if (oauthAccs.activeEmail) { return { email: oauthAccs.activeEmail, source: 'oauth_token' }; }
 if (vscdb.legacyActiveEmail) { return { email: vscdb.legacyActiveEmail, source: 'state_vscdb' }; }
 const managed = discoverFromManaged(options.settings);
-const enabled = managed.filter((a) => a.enabled !== false);
+const enabled = managed.filter((a) => a.enabled !== false && !disabledEmails.has(a.email));
 if (enabled.length === 1) { return { email: enabled[0].email, source: 'managed' }; }
 return null; }
 const detectActiveAccount = discoverCurrentAccount;
@@ -536,5 +578,6 @@ module.exports = {
   openConversationDbWithFallback, scanConversationDb, getDefaultConversationSources, getDbFingerprint, scanAllConversationDbs,
   extractEmailFromUserStatusValue, getVscdbCandidates, discoverFromVscdb, discoverFromTools,
   discoverFromGoogleAccountsJson, discoverFromOAuthTokens, discoverCliLogWindows, discoverToolsTokenStatsWindows,
-  discoverFromManaged, discoverAccounts, discoverCurrentAccount, detectActiveAccount
+  discoverFromManaged, discoverAccounts, discoverCurrentAccount, detectActiveAccount,
+  DB_CACHE_VERSION
 };

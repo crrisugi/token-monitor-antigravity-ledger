@@ -10,7 +10,7 @@ const {
   parseProto, decodeTimestamp, parseUsageStats, inspectWalBytes, resolveModelAndPrice,
   scanConversationDb, scanAllConversationDbs, extractEmailFromUserStatusValue,
   discoverFromVscdb, discoverFromTools, discoverFromGoogleAccountsJson, discoverFromManaged,
-  discoverAccounts, discoverCurrentAccount
+  discoverAccounts, discoverCurrentAccount, localDayKey
 } = scanner;
 const {
   quotaGroupForModel, toEpochMs, buildQuotaAttributionWindows, createDefaultLedger,
@@ -18,10 +18,25 @@ const {
   attributeCallRecord,
   emptyMetrics, emptyAccountBucket, cloneMetrics, hasActiveTodayPeriod,
   extractSessionTimestamp, resolveSessionDate, extractSessionMetrics, subtractMetrics,
-  syncActiveAccountSessions, attributeSession, extractObsMetrics, addUsageToBucket
+  syncActiveAccountSessions, allocationsForDay, attributeSession, extractObsMetrics, addUsageToBucket
 } = attr;
+function dayQualityScore(dayObj) { let tokens = 0;
+let quality = 0;
+if (dayObj && typeof dayObj === 'object') {
+tokens = Number(dayObj.totalTokens || dayObj.tokens || 0);
+const observations = dayObj.observations && typeof dayObj.observations === 'object'
+? Object.values(dayObj.observations) : [];
+for (const obs of observations) { if (!obs || typeof obs !== 'object') continue;
+tokens = Math.max(tokens, Number(obs.tokens || obs.totalTokens || 0));
+quality = Math.max(quality, Number(obs.quality || obs.sourceQuality || 0) || 0); }
+if (quality === 0 && observations.length > 0) quality = 1; }
+return { tokens: Number.isFinite(tokens) && tokens > 0 ? tokens : 0, quality }; }
+function liveDayIsGreater(live, existing) { const l = dayQualityScore(live);
+const e = dayQualityScore(existing);
+if (l.tokens !== e.tokens) return l.tokens > e.tokens;
+return l.quality > e.quality; }
 function aggregateAccountUsage(args = {}, options = {}) { const { calls = null, sessions = [], dailyHistory = [],
-range = null, accountFilter = 'all', discoveredAccounts = []
+range = null, accountFilter = 'all', discoveredAccounts = [], activeAccount = null
 } = args;
 const ledger = args.ledger || options.ledger || createDefaultLedger();
 const quotaWindows = args.quotaWindows || options.quotaWindows || buildQuotaAttributionWindows(discoveredAccounts, options);
@@ -69,8 +84,13 @@ cacheWriteTokens: Number(call.cacheWriteTokens || 0),
 reasoningTokens: Number(call.reasoningTokens ?? call.thinkingTokens ?? 0) } } }); } } else {
 let allDailyObservations = [];
 if (Array.isArray(dailyHistory)) { allDailyObservations = dailyHistory;
-} else if (dailyHistory && typeof dailyHistory === 'object' && dailyHistory.days) {
-for (const [dayKey, dayObj] of Object.entries(dailyHistory.days)) { if (dayObj && dayObj.observations) {
+} else if (dailyHistory && typeof dailyHistory === 'object') { const days = {};
+if (dailyHistory.days && typeof dailyHistory.days === 'object') {
+for (const [dayKey, dayObj] of Object.entries(dailyHistory.days)) { days[dayKey] = dayObj; } }
+if (dailyHistory.liveDays && typeof dailyHistory.liveDays === 'object') {
+for (const [dayKey, liveObj] of Object.entries(dailyHistory.liveDays)) {
+if (!days[dayKey] || liveDayIsGreater(liveObj, days[dayKey])) { days[dayKey] = liveObj; } } }
+for (const [dayKey, dayObj] of Object.entries(days)) { if (dayObj && dayObj.observations) {
 for (const obs of Object.values(dayObj.observations)) { if (obs && !obs.day && !obs.date) {
 allDailyObservations.push({ ...obs, day: dayKey }); } else { allDailyObservations.push(obs); } } } } }
 const hasDailyHistory = allDailyObservations.length > 0;
@@ -85,10 +105,11 @@ const isEligible = Boolean(
 hasToday || (startedAt && ledger.featureActivatedAt && startedAt >= ledger.featureActivatedAt)
 );
 const binding = session.sessionId && ledger.sessionAccounts?.[session.sessionId];
-if (isEligible && binding?.allocations && Object.keys(binding.allocations).length > 0) {
-for (const [allocEmail, allocMetrics] of Object.entries(binding.allocations)) {
+const dayAlloc = allocationsForDay(binding, sessionDate || 'unknown');
+if (isEligible && dayAlloc && Object.keys(dayAlloc).length > 0) {
+for (const [allocEmail, allocMetrics] of Object.entries(dayAlloc)) {
 addUsageToBucket(getOrCreateAccount(allocEmail), allocMetrics); } } else {
-const attr = attributeSession(session, ledger, { bindNewSessions: options.bindNewSessions ?? false, quotaWindows
+const attr = attributeSession(session, ledger, { activeAccount, bindNewSessions: options.bindNewSessions ?? false, quotaWindows
 });
 const sMetrics = extractSessionMetrics(session, { preferAllTime: true });
 addUsageToBucket(getOrCreateAccount(attr.email), sMetrics); } } } } else { const filteredObservations = [];
@@ -125,12 +146,13 @@ const subTotal = { totalTokens: 0, costUsd: 0, inputTokens: 0, outputTokens: 0, 
 cacheWriteTokens: 0, reasoningTokens: 0, models: {} };
 for (const session of daySessions) {
 const binding = session.sessionId && ledger.sessionAccounts?.[session.sessionId];
-if (binding?.allocations && Object.keys(binding.allocations).length > 0) {
-for (const [allocEmail, allocMetrics] of Object.entries(binding.allocations)) {
+const dayAlloc = allocationsForDay(binding, d);
+if (dayAlloc && Object.keys(dayAlloc).length > 0) {
+for (const [allocEmail, allocMetrics] of Object.entries(dayAlloc)) {
 if (allocEmail === 'unattributed') continue;
 addUsageToBucket(getOrCreateAccount(allocEmail), allocMetrics);
 addUsageToBucket(subTotal, allocMetrics); } } else { const sAttr = attributeSession(session, ledger, {
-bindNewSessions: options.bindNewSessions ?? false, quotaWindows });
+activeAccount, bindNewSessions: options.bindNewSessions ?? false, quotaWindows });
 const sMetrics = extractSessionMetrics(session, { preferToday: hasActiveTodayPeriod(session) });
 addUsageToBucket(getOrCreateAccount(sAttr.email), sMetrics);
 addUsageToBucket(subTotal, sMetrics); } }
@@ -140,10 +162,11 @@ addUsageToBucket(getOrCreateAccount('unattributed'), rem); } }
 for (const [d, daySessions] of postActSessionsByDay.entries()) { if (obsByDay.has(d)) continue;
 for (const session of daySessions) {
 const binding = session.sessionId && ledger.sessionAccounts?.[session.sessionId];
-if (binding?.allocations && Object.keys(binding.allocations).length > 0) {
-for (const [allocEmail, allocMetrics] of Object.entries(binding.allocations)) {
+const dayAlloc = allocationsForDay(binding, d);
+if (dayAlloc && Object.keys(dayAlloc).length > 0) {
+for (const [allocEmail, allocMetrics] of Object.entries(dayAlloc)) {
 addUsageToBucket(getOrCreateAccount(allocEmail), allocMetrics); } } else {
-const sAttr = attributeSession(session, ledger, { bindNewSessions: options.bindNewSessions ?? false, quotaWindows
+const sAttr = attributeSession(session, ledger, { activeAccount, bindNewSessions: options.bindNewSessions ?? false, quotaWindows
 });
 const sMetrics = extractSessionMetrics(session, { preferAllTime: true });
 addUsageToBucket(getOrCreateAccount(sAttr.email), sMetrics); } } } } }
@@ -224,15 +247,36 @@ coverage.unattributedCalls = unattributedCalls; }
 return { accountFilter: filter, totalTokens, costUsd, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
 reasoningTokens, models, accounts, byAccount, overallTotalTokens, overallCostUsd: Number(overallCostUsd.toFixed(6)),
 coverage }; }
-function loadArchivedSessions(appDataRoot) { const sessions = [];
+function sessionTokenTotal(entry) { if (!entry || typeof entry !== 'object') return 0;
+const target = entry.periods?.allTime || entry.periods?.month || entry.periods?.today || entry;
+return Number(target.totalTokens || target.tokens || entry.totalTokens || entry.tokens || 0) || 0; }
+function loadArchivedSessions(appDataRoot) { const bySession = new Map();
+function addSession(entry, fromSqlite = false) { if (!entry || typeof entry !== 'object') return;
+if (fromSqlite && !isAntigravityClient(entry.client)) return;
+if (!entry.sessionId) return;
+const key = `${entry.client || 'antigravity'}:${entry.sessionId}`;
+const existing = bySession.get(key);
+if (!existing) { bySession.set(key, { entry, fromSqlite }); return; }
+if (existing.fromSqlite && !fromSqlite) return;
+if (!existing.fromSqlite && fromSqlite) { bySession.set(key, { entry, fromSqlite }); return; }
+if (!existing.fromSqlite && !fromSqlite && sessionTokenTotal(entry) > sessionTokenTotal(existing.entry)) {
+bySession.set(key, { entry, fromSqlite }); } }
 if (DatabaseSync) { const dbPath = path.join(appDataRoot, 'session-usage-archive.sqlite');
 if (fs.existsSync(dbPath)) { try { const db = new DatabaseSync(dbPath, { readOnly: true });
 try { try { db.exec('PRAGMA busy_timeout = 250'); } catch (_) {}
 try { db.exec('PRAGMA query_only = ON'); } catch (_) {}
 const rows = db.prepare('SELECT entry_json FROM sessions').all();
-for (const row of rows) { try { const entry = JSON.parse(row.entry_json);
-if (entry && isAntigravityClient(entry.client)) { sessions.push(entry); } } catch (_) {} }
+for (const row of rows) { try { addSession(JSON.parse(row.entry_json), true); } catch (_) {} }
 } finally { try { db.close(); } catch (_) {} } } catch (_) {} } }
+const legacyJsonPath = path.join(appDataRoot, 'session-usage-archive.json');
+if (fs.existsSync(legacyJsonPath)) { const data = readJson(legacyJsonPath, null);
+const source = data?.sessions && typeof data.sessions === 'object' ? data.sessions : data;
+if (Array.isArray(source)) { for (const entry of source) { addSession(entry); } }
+else if (source && typeof source === 'object') { for (const [rawKey, value] of Object.entries(source)) {
+if (!value || typeof value !== 'object') continue;
+const key = String(rawKey);
+const keySessionId = key.includes(':') ? key.slice(key.indexOf(':') + 1) : key;
+addSession({ ...value, client: value.client || 'antigravity', sessionId: value.sessionId || keySessionId }); } } }
 const archiveDir = path.join(appDataRoot, 'tokscale-cache', 'antigravity-archive');
 if (fs.existsSync(archiveDir)) { try { const entries = fs.readdirSync(archiveDir, { withFileTypes: true });
 for (const entry of entries) { if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
@@ -240,27 +284,42 @@ const filePath = path.join(archiveDir, entry.name);
 const data = readJson(filePath, null);
 if (!data || typeof data !== 'object') continue;
 if (Array.isArray(data.sessions)) { for (const s of data.sessions) {
-if (s && typeof s === 'object') sessions.push({ client: 'antigravity', ...s }); }
-} else if (data.sessionId || data.totalTokens || data.tokens || data.periods) { sessions.push({
-client: 'antigravity', sessionId: data.sessionId || entry.name.replace(/\.json$/i, ''), ...data }); } }
+if (s && typeof s === 'object') { addSession({ client: 'antigravity', ...s }); } }
+} else if (data.sessionId || data.totalTokens || data.tokens || data.periods) {
+addSession({ client: 'antigravity', sessionId: data.sessionId || entry.name.replace(/\.json$/i, ''), ...data }); } }
 } catch (_) {} }
-return sessions; }
-async function activate({ dataDirectory, storage, homeDir, conversationDirs, conversationSources, publish } = {}) {
-const hostDataDir = getSharedDataDir();
+return [...bySession.values()].map((record) => record.entry); }
+function resolveHostDataDir(options = {}) { if (options.hostDataDir) return options.hostDataDir;
+if (options.dataDirectory) { const parentDir = path.dirname(options.dataDirectory);
+if (path.basename(parentDir) === 'plugin-data') return path.dirname(parentDir); }
+return getSharedDataDir(); }
+const AUTO_REFRESH_INTERVAL_MS = 15_000;
+async function activate({ dataDirectory, storage, homeDir, hostDataDir: configuredHostDataDir, conversationDirs, conversationSources,
+publish, autoRefreshIntervalMs } = {}) {
+const hostDataDir = resolveHostDataDir({ hostDataDir: configuredHostDataDir, dataDirectory });
 const pluginDataDir = dataDirectory || path.join(hostDataDir, 'plugin-data', 'antigravity-account-ledger');
 try { fs.mkdirSync(pluginDataDir, { recursive: true }); } catch (_) {}
 const pluginLedgerFile = path.join(pluginDataDir, DEFAULT_LEDGER_FILENAME);
 const hostLedgerFile = path.join(hostDataDir, DEFAULT_LEDGER_FILENAME);
 const dbCacheFile = path.join(pluginDataDir, DEFAULT_DB_CACHE_FILENAME);
 const preferencesFile = path.join(pluginDataDir, 'preferences.json');
+const refreshIntervalMs = Number.isFinite(autoRefreshIntervalMs) && autoRefreshIntervalMs > 0
+? autoRefreshIntervalMs
+: AUTO_REFRESH_INTERVAL_MS;
 let currentFilter = 'all';
 let currentRange = null;
+let currentVisible = true;
+let lastScanAt = Date.now();
+let autoRefreshTimer = null;
+let disposed = false;
 function applyPreferences(prefs) { if (!prefs || typeof prefs !== 'object') return;
 if (prefs.accountFilter) currentFilter = prefs.accountFilter;
 if (prefs.range) currentRange = prefs.range; }
 applyPreferences(readJson(preferencesFile, null));
 if (storage && typeof storage.get === 'function') { try {
 applyPreferences(await storage.get('preferences')); } catch (_) {} }
+if (!currentRange) { const today = localDayKey() || normalizeDate(new Date());
+currentRange = { start: `${today.slice(0, 7)}-01`, end: today }; }
 function resolveLedger() { if (fs.existsSync(pluginLedgerFile)) {
 return { ledger: loadLedger(pluginLedgerFile), ledgerFile: pluginLedgerFile }; }
 if (fs.existsSync(hostLedgerFile)) { const migrated = loadLedger(hostLedgerFile);
@@ -284,28 +343,52 @@ const sessions = loadArchivedSessions(hostDataDir);
 if (activeAccount && activeAccount.email && sessions.length > 0) {
 syncActiveAccountSessions(sessions, activeAccount, ledger, { ledgerFile, save: true }); }
 const summary = aggregateAccountUsage( { calls: calls.length > 0 ? calls : null, sessions, dailyHistory,
-range: currentRange, accountFilter: currentFilter, discoveredAccounts, ledger, quotaWindows
+range: currentRange, accountFilter: currentFilter, discoveredAccounts, activeAccount, ledger, quotaWindows
 }, { ledger, quotaWindows, bindNewSessions: true }
 );
 const resolvedActive = activeAccount
 || (ledger.lastActiveAccount ? { email: ledger.lastActiveAccount, source: 'ledger_last_active' } : null);
-return { summary, ...summary, activeAccount: resolvedActive, discoveredAccounts, ledger,
+return { summary, ...summary, accountFilter: currentFilter, activeAccount: resolvedActive, discoveredAccounts, ledger,
 featureActivatedAt: ledger.featureActivatedAt,
 range: currentRange, scannerStats: { source: calls.length > 0 ? 'sqlite_protobuf_calls' : 'daily_history_fallback',
 totalCalls: calls.length
 }, updatedAt: new Date().toISOString() }; }
+function stampAndCompute(payload = {}) { const result = computeSummary(payload);
+lastScanAt = Date.now();
+return result; }
 async function savePreferences() { const prefs = { accountFilter: currentFilter, range: currentRange };
 if (storage && typeof storage.set === 'function') { try { await storage.set('preferences', prefs); } catch (_) {} }
 try { writeJsonAtomic(preferencesFile, prefs); } catch (_) {} }
-const actions = { async getSummary(payload = {}) { const result = computeSummary(payload);
-await savePreferences();
-if (typeof publish === 'function') { try { publish(result); } catch (_) {} }
+function publishResult(result) { if (typeof publish === 'function') { try { publish(result); } catch (_) {} } }
+function clearAutoRefresh() { if (autoRefreshTimer) { clearTimeout(autoRefreshTimer); autoRefreshTimer = null; } }
+function scheduleAutoRefresh({ immediate = false } = {}) {
+if (disposed || !currentVisible || typeof publish !== 'function') return;
+clearAutoRefresh();
+const delay = immediate ? 0 : Math.max(0, refreshIntervalMs - (Date.now() - lastScanAt));
+autoRefreshTimer = setTimeout(() => { autoRefreshTimer = null;
+runAutoRefresh(immediate); }, delay);
+if (typeof autoRefreshTimer.unref === 'function') autoRefreshTimer.unref(); }
+function runAutoRefresh(force = false) { if (disposed || !currentVisible) return;
+if (!force && Date.now() - lastScanAt < refreshIntervalMs) { scheduleAutoRefresh(); return; }
+try { publishResult(stampAndCompute({})); } catch (_) {}
+scheduleAutoRefresh(); }
+const actions = { async getSummary(payload = {}) {
+const explicit = Boolean(payload && (payload.range !== undefined || payload.accountFilter !== undefined));
+const result = stampAndCompute(payload);
+if (explicit && payload.auto !== true) { await savePreferences(); }
 return result;
 } };
+function update(context = {}) { if (disposed) return;
+const nextVisible = typeof context?.visible === 'boolean' ? context.visible : currentVisible;
+const becameVisible = nextVisible && !currentVisible;
+currentVisible = nextVisible;
+if (!currentVisible) { clearAutoRefresh(); return; }
+scheduleAutoRefresh({ immediate: becameVisible }); }
+scheduleAutoRefresh();
 return { actions, async call(method, args = {}) { if (typeof actions[method] === 'function') {
 return await actions[method](args); }
 throw new Error(`Unknown method: ${method}`);
-}, dispose() {} }; }
+}, update, dispose() { disposed = true; clearAutoRefresh(); } }; }
 module.exports = {
   ...scanner,
   ...attr,

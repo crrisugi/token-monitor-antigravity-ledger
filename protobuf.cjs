@@ -40,10 +40,17 @@ const MODEL_PRICING = Object.freeze({
 'claude-sonnet-5-5': { input: 2.0, cacheRead: 0.1, cacheWrite: 2.5, output: 10.0 } });
 function normalizeEmail(value) { return typeof value === 'string' ? value.trim().toLowerCase() : ''; }
 function localDayKey(date = new Date()) {
-const y = date.getFullYear();
-const m = String(date.getMonth() + 1).padStart(2, '0');
-const d = String(date.getDate()).padStart(2, '0');
+const value = date instanceof Date ? date : new Date(date);
+if (!value || Number.isNaN(value.getTime())) return '';
+const y = value.getFullYear();
+const m = String(value.getMonth() + 1).padStart(2, '0');
+const d = String(value.getDate()).padStart(2, '0');
 return `${y}-${m}-${d}`; }
+function toEpochMs(val) { if (val === null || val === undefined || val === '') return 0;
+if (typeof val === 'number' && Number.isFinite(val)) {
+return val > 20_000_000_000 ? Math.round(val) : Math.round(val * 1000); }
+const parsed = Date.parse(String(val));
+return Number.isFinite(parsed) ? parsed : 0; }
 function normalizeDate(value) {
 if (value === null || value === undefined || value === '') return '';
 if (typeof value === 'string') {
@@ -163,8 +170,11 @@ const { out, errors } = parseProto(buf);
 if (errors.length > 0) return null;
 const sec = fVal(out, 1, 0);
 const nsec = fVal(out, 2, 0) || 0;
-if (sec === null || sec <= 0) return null;
-return sec + nsec / 1e9; }
+if (sec === null || !Number.isSafeInteger(sec) || sec <= 0) return null;
+if (!Number.isFinite(nsec) || nsec < 0 || nsec >= 1e9) return null;
+const value = sec + nsec / 1e9;
+if (Number.isNaN(new Date(value * 1000).getTime())) return null;
+return value; }
 function decodeModelEnumPlaceholder(enumVal) { if (!enumVal || enumVal <= 0) return null;
 if (enumVal >= 1000) return `MODEL_PLACEHOLDER_M${enumVal - 1000}`;
 return `MODEL_ENUM_${enumVal}`; }
@@ -261,12 +271,13 @@ if (m.startsWith('claude-sonnet-4-6')) return 'claude-sonnet-4-6';
 if (m.startsWith('claude-opus-5-5')) return 'claude-opus-5-5';
 if (m.startsWith('claude-sonnet-5-5')) return 'claude-sonnet-5-5';
 return null; }
-function resolveModelAndPrice({ responseModel = null, displayName = null, modelEnum = 0, inputTokens = 0,
-cacheReadTokens = 0, cacheWriteTokens = 0, outputTokens = 0
+function resolveModelAndPrice({ responseModel = null, displayName = null, modelEnum = 0, fallbackModel = null,
+inputTokens = 0, cacheReadTokens = 0, cacheWriteTokens = 0, outputTokens = 0
 } = {}) { let modelId = null;
 let modelBasis = 'unknown';
 const trimmedResp = typeof responseModel === 'string' ? responseModel.trim() : '';
 const trimmedDisp = typeof displayName === 'string' ? displayName.trim() : '';
+const trimmedFallback = typeof fallbackModel === 'string' ? fallbackModel.trim() : '';
 if (trimmedResp) { modelId = DISPLAY_NAME_TO_CANONICAL[trimmedResp] || trimmedResp;
 modelBasis = 'chat_model.response_model'; } else if (trimmedDisp && DISPLAY_NAME_TO_CANONICAL[trimmedDisp]) {
 modelId = DISPLAY_NAME_TO_CANONICAL[trimmedDisp];
@@ -276,7 +287,9 @@ modelBasis = 'model_enum_map'; } else if (trimmedDisp) {
 modelId = trimmedDisp.toLowerCase().replace(/[^a-z0-9.+-]+/g, '-').replace(/^-|-$/g, '');
 modelBasis = 'chat_model.model_display_name'; } else if (modelEnum > 0) {
 modelId = decodeModelEnumPlaceholder(modelEnum);
-modelBasis = 'model_enum_placeholder'; } else { modelId = 'unknown'; }
+modelBasis = 'model_enum_placeholder'; } else if (trimmedFallback) {
+modelId = DISPLAY_NAME_TO_CANONICAL[trimmedFallback] || trimmedFallback;
+modelBasis = 'conversation_fallback'; } else { modelId = 'unknown'; }
 const pricingKey = resolveCanonicalPricingKey(modelId) || resolveCanonicalPricingKey(MODEL_ENUM_MAP[modelEnum]);
 const rates = pricingKey ? MODEL_PRICING[pricingKey] : null;
 let costUsd = 0;
@@ -298,7 +311,7 @@ return nonZero; }
 module.exports = {
   DatabaseSync, DEFAULT_LEDGER_FILENAME, DEFAULT_DB_CACHE_FILENAME, GLOBAL_DB_SCAN_CACHE,
   MODEL_ENUM_MAP, DISPLAY_NAME_TO_CANONICAL, MODEL_PRICING,
-  normalizeEmail, localDayKey, normalizeDate, isAntigravityClient, getTempDir, getSharedDataDir, readJson, writeJsonAtomic,
+  normalizeEmail, localDayKey, toEpochMs, normalizeDate, isAntigravityClient, getTempDir, getSharedDataDir, readJson, writeJsonAtomic,
   parseProto, fVal, fStr, unpackVarints, decodeTimestamp, decodeModelEnumPlaceholder, parseUsageStats,
   walChecksum, inspectWalBytes, resolveCanonicalPricingKey, resolveModelAndPrice, extractRetryEntries
 };

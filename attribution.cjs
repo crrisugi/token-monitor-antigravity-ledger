@@ -3,22 +3,17 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const scanner = require('./scanner.cjs');
-const { DatabaseSync, DEFAULT_LEDGER_FILENAME, DEFAULT_DB_CACHE_FILENAME, MODEL_ENUM_MAP, DISPLAY_NAME_TO_CANONICAL, MODEL_PRICING, normalizeEmail, normalizeDate, isAntigravityClient, getTempDir, getSharedDataDir, readJson, writeJsonAtomic, parseProto, fVal, fStr, unpackVarints, decodeTimestamp, parseUsageStats, resolveModelAndPrice, openConversationDbWithFallback, scanConversationDb, scanAllConversationDbs, extractEmailFromUserStatusValue, discoverFromTools, discoverCliLogWindows, discoverToolsTokenStatsWindows, discoverAccounts, discoverCurrentAccount, detectActiveAccount } = scanner;
+const { DatabaseSync, DEFAULT_LEDGER_FILENAME, DEFAULT_DB_CACHE_FILENAME, MODEL_ENUM_MAP, DISPLAY_NAME_TO_CANONICAL, MODEL_PRICING, normalizeEmail, normalizeDate, isAntigravityClient, getTempDir, getSharedDataDir, readJson, writeJsonAtomic, parseProto, fVal, fStr, unpackVarints, decodeTimestamp, parseUsageStats, resolveModelAndPrice, openConversationDbWithFallback, scanConversationDb, scanAllConversationDbs, extractEmailFromUserStatusValue, discoverFromTools, discoverCliLogWindows, discoverToolsTokenStatsWindows, discoverAccounts, discoverCurrentAccount, detectActiveAccount, toEpochMs } = scanner;
 function quotaGroupForModel(modelId) { const m = String(modelId || '').trim().toLowerCase();
 if (m.includes('claude') || m.includes('gpt')) { return '3p-weekly'; }
 if (m.includes('argon')) { return 'argon-weekly'; }
 return 'gemini-weekly'; }
-function toEpochMs(val) { if (val === null || val === undefined || val === '') return 0;
-if (typeof val === 'number' && Number.isFinite(val)) {
-return val > 20_000_000_000 ? Math.round(val) : Math.round(val * 1000); }
-const parsed = Date.parse(String(val));
-return Number.isFinite(parsed) ? parsed : 0; }
 function buildQuotaAttributionWindows(accounts = [], options = {}) {
 const sourceAccounts = Array.isArray(accounts) && accounts.length > 0
 ? accounts
 : discoverFromTools(options).accounts;
 const byGroup = { 'gemini-weekly': [], '3p-weekly': [], 'argon-weekly': [] };
-const seenAccountGroup = new Set();
+const seenAccountGroup = new Map();
 for (const acc of sourceAccounts) { const email = normalizeEmail(typeof acc === 'string' ? acc : acc?.email);
 if (!email || !acc || typeof acc !== 'object') continue;
 const quota = acc.quota;
@@ -34,18 +29,23 @@ const frac = typeof remainingFraction === 'number' && Number.isFinite(remainingF
 ? remainingFraction
 : 1.0;
 const cur = groupStats.get(groupKey);
-if (!cur || frac < cur.remainingFraction) { groupStats.set(groupKey, { remainingFraction: frac, resetMs }); } };
-if (Array.isArray(quota.quota_groups)) { for (const grp of quota.quota_groups) {
-const disp = String(grp?.display_name || '').toLowerCase();
+if (!cur || frac < cur.remainingFraction
+|| (frac === cur.remainingFraction && resetMs > cur.resetMs)) {
+groupStats.set(groupKey, { remainingFraction: frac, resetMs }); } };
+const groups = quota.quota_groups ?? quota.groups;
+if (Array.isArray(groups)) { for (const grp of groups) {
+const disp = String(grp?.display_name ?? grp?.displayName ?? '').toLowerCase();
 for (const b of Array.isArray(grp?.buckets) ? grp.buckets : []) {
-const bid = String(b?.bucket_id || '').toLowerCase();
+const bid = String(b?.bucket_id ?? b?.bucketId ?? '').toLowerCase();
 const win = String(b?.window || '').toLowerCase();
-if (bid === 'argon-weekly' || (win === 'weekly' && disp.includes('argon'))) {
-recordGroupStat('argon-weekly', b.remaining_fraction ?? b.remainingFraction, b.reset_time ?? b.resetTime);
+const remaining = b?.remaining_fraction ?? b?.remainingFraction;
+const reset = b?.reset_time ?? b?.resetTime;
+if (bid.includes('argon') || (win === 'weekly' && disp.includes('argon'))) {
+recordGroupStat('argon-weekly', remaining, reset);
 } else if (bid === 'gemini-weekly' || (win === 'weekly' && disp.includes('gemini'))) {
-recordGroupStat('gemini-weekly', b.remaining_fraction ?? b.remainingFraction, b.reset_time ?? b.resetTime);
+recordGroupStat('gemini-weekly', remaining, reset);
 } else if (bid === '3p-weekly' || (win === 'weekly' && (disp.includes('claude') || disp.includes('gpt')))) {
-recordGroupStat('3p-weekly', b.remaining_fraction ?? b.remainingFraction, b.reset_time ?? b.resetTime); } } } }
+recordGroupStat('3p-weekly', remaining, reset); } } } }
 if (Array.isArray(quota.models)) { for (const m of quota.models) {
 const mName = m?.name || m?.modelId || m?.display_name || m?.model || '';
 const groupKey = quotaGroupForModel(mName);
@@ -55,14 +55,16 @@ else if (typeof m?.remainingFraction === 'number') frac = m.remainingFraction;
 else if (typeof m?.percentage === 'number') frac = m.percentage / 100;
 recordGroupStat(groupKey, frac, m?.reset_time ?? m?.resetTime); } }
 for (const [groupKey, stat] of groupStats.entries()) { const dedupKey = `${email}:${groupKey}`;
-if (seenAccountGroup.has(dedupKey)) continue;
-seenAccountGroup.add(dedupKey);
+const prev = seenAccountGroup.get(dedupKey);
+if (prev && lastUsedMs <= prev.lastUsedMs) continue;
+seenAccountGroup.set(dedupKey, { email, groupKey, stat, createdAtMs, lastUsedMs }); } }
+for (const { email, groupKey, stat, createdAtMs } of seenAccountGroup.values()) {
 const sevenDaysMs = 7 * 86400_000;
 const startMs = Math.max(createdAtMs, stat.resetMs - sevenDaysMs);
-const endMs = lastUsedMs > startMs ? lastUsedMs : stat.resetMs;
+const endMs = stat.resetMs;
 if (endMs < startMs) continue;
 byGroup[groupKey].push({ email, group: groupKey, startMs, endMs, resetMs: stat.resetMs,
-remainingFraction: stat.remainingFraction, consumed: stat.remainingFraction < 0.999999 }); } }
+remainingFraction: stat.remainingFraction, consumed: stat.remainingFraction < 0.999999 }); }
 byGroup.cliLogWindows = discoverCliLogWindows(options);
 byGroup.toolsUsageWindows = discoverToolsTokenStatsWindows(options);
 return byGroup; }
@@ -75,10 +77,14 @@ lastActiveAccount: loaded?.lastActiveAccount || null,
 timeline: Array.isArray(loaded?.timeline) ? loaded.timeline : [],
 sessionAccounts: (loaded?.sessionAccounts && typeof loaded.sessionAccounts === 'object') ? loaded.sessionAccounts : {}
 }; }
-function loadLedger(ledgerFile) { const loaded = readJson(ledgerFile, null);
-if (loaded && typeof loaded === 'object') { return normalizeLedger(loaded); }
+function loadLedger(ledgerFile) { if (!ledgerFile) return createDefaultLedger();
+if (fs.existsSync(ledgerFile)) { try {
+const loaded = JSON.parse(fs.readFileSync(ledgerFile, 'utf8'));
+if (loaded && typeof loaded === 'object') { return normalizeLedger(loaded); } } catch (_) {
+const backupFile = `${ledgerFile}.corrupt-${Date.now()}`;
+try { fs.renameSync(ledgerFile, backupFile); } catch (_) {} } }
 const defaultLedger = createDefaultLedger();
-if (ledgerFile) { try { writeJsonAtomic(ledgerFile, defaultLedger); } catch (_) {} }
+try { writeJsonAtomic(ledgerFile, defaultLedger); } catch (_) {}
 return defaultLedger; }
 function saveLedger(ledger, ledgerFile) { const normalized = normalizeLedger(ledger);
 if (ledgerFile && typeof ledgerFile === 'string') { writeJsonAtomic(ledgerFile, normalized); }
@@ -87,18 +93,19 @@ function recordAccountHeartbeat(activeAccount, timestamp, ledger, ledgerFile) {
 const email = normalizeEmail(typeof activeAccount === 'string' ? activeAccount : activeAccount?.email);
 if (!email) return { changed: false, ledger };
 const source = (typeof activeAccount === 'object' && activeAccount?.source) || 'heartbeat';
-const ts = timestamp ? new Date(timestamp).toISOString() : new Date().toISOString();
+const date = timestamp ? new Date(timestamp) : new Date();
+const ts = Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
 let changed = false;
 if (!Array.isArray(ledger.timeline)) { ledger.timeline = []; }
 const lastInterval = ledger.timeline[ledger.timeline.length - 1];
 if (!lastInterval) { ledger.timeline.push({ email, startedAt: ts, endedAt: null, source });
 ledger.lastActiveAccount = email;
 changed = true; } else if (lastInterval.email !== email) {
-if (!lastInterval.endedAt || lastInterval.endedAt < ts) { lastInterval.endedAt = ts; }
+if (!lastInterval.endedAt || toEpochMs(lastInterval.endedAt) < toEpochMs(ts)) { lastInterval.endedAt = ts; }
 ledger.timeline.push({ email, startedAt: ts, endedAt: null, source });
 ledger.lastActiveAccount = email;
 changed = true; } else { ledger.lastActiveAccount = email;
-if (lastInterval.endedAt && ts > lastInterval.endedAt) {
+if (lastInterval.endedAt && toEpochMs(ts) > toEpochMs(lastInterval.endedAt)) {
 ledger.timeline.push({ email, startedAt: ts, endedAt: null, source });
 changed = true; } }
 if (changed && ledgerFile) { saveLedger(ledger, ledgerFile); }
@@ -107,7 +114,7 @@ function attributeCallRecord(call, options = {}) { const ledger = options.ledger
 const quotaWindows = options.quotaWindows;
 const tsMs = typeof call?.timestampMs === 'number' && Number.isFinite(call.timestampMs)
 ? call.timestampMs
-: toEpochMs(call?.callTimestamp ? call.callTimestamp * 1000 : (call?.timestamp || call?.startedAt || call?.day));
+: toEpochMs(call?.callTimestamp ?? call?.timestamp ?? call?.startedAt ?? call?.day);
 const convId = call?.conversationId || call?.sessionId;
 if (convId && ledger?.sessionAccounts?.[convId]?.source === 'manual' && ledger.sessionAccounts[convId].email) {
 return { email: normalizeEmail(ledger.sessionAccounts[convId].email), source: 'manual', layer: 1,
@@ -232,6 +239,19 @@ cacheReadTokens: Math.max(0, mm.cacheReadTokens - sm.cacheReadTokens),
 cacheWriteTokens: Math.max(0, mm.cacheWriteTokens - sm.cacheWriteTokens),
 reasoningTokens: Math.max(0, mm.reasoningTokens - sm.reasoningTokens) }; } }
 return res; }
+function cloneAllocations(allocations) { const out = {};
+for (const [email, metrics] of Object.entries(allocations || {})) { out[email] = cloneMetrics(metrics); }
+return out; }
+function allocationsForDay(binding, dayKey) {
+  if (!binding) return null;
+  const byDay = binding.allocationsByDay;
+  if (byDay && typeof byDay === 'object' && dayKey && byDay[dayKey] && Object.keys(byDay[dayKey]).length > 0) return byDay[dayKey];
+  if (binding.allocations && Object.keys(binding.allocations).length > 0) {
+    const lastDay = binding.lastDay || null;
+    if (!lastDay || !dayKey || lastDay === dayKey) return binding.allocations;
+  }
+  return null;
+}
 function syncActiveAccountSessions(sessions, activeAccount, ledger, options = {}) {
 const activeEmail = normalizeEmail(
 typeof activeAccount === 'string' ? activeAccount : (activeAccount?.email || ledger?.lastActiveAccount)
@@ -241,40 +261,53 @@ let changed = false;
 if (!ledger.sessionAccounts) { ledger.sessionAccounts = {}; }
 for (const session of sessions) { if (!session || typeof session !== 'object' || !session.sessionId) continue;
 if (session.client && !isAntigravityClient(session.client)) continue;
+const existing = ledger.sessionAccounts[session.sessionId];
+if (existing && existing.source === 'manual') continue;
 const startedAt = extractSessionTimestamp(session);
+const startedMs = toEpochMs(startedAt);
 const hasToday = hasActiveTodayPeriod(session);
-const isStartedPostActivation = Boolean(
-startedAt && ledger.featureActivatedAt && startedAt >= ledger.featureActivatedAt
-);
+const activatedMs = toEpochMs(ledger.featureActivatedAt);
+const isStartedPostActivation = Boolean(startedMs > 0 && activatedMs > 0 && startedMs >= activatedMs);
 const isEligible = Boolean(hasToday || isStartedPostActivation);
 if (!isEligible) continue;
 const allTimeMetrics = extractSessionMetrics(session, { preferAllTime: true });
 const todayMetrics = hasToday ? extractSessionMetrics(session, { preferToday: true }) : allTimeMetrics;
-const existing = ledger.sessionAccounts[session.sessionId];
 const currentDay = resolveSessionDate(session);
+const dayKey = currentDay || 'unknown';
 if (!existing) { let targetEmail = activeEmail;
-if (startedAt && Array.isArray(ledger.timeline)) { for (let i = ledger.timeline.length - 1; i >= 0; i -= 1) {
+if (startedMs > 0 && Array.isArray(ledger.timeline)) { for (let i = ledger.timeline.length - 1; i >= 0; i -= 1) {
 const interval = ledger.timeline[i];
-if (interval.startedAt <= startedAt && (!interval.endedAt || startedAt <= interval.endedAt)) {
+const intervalStartMs = toEpochMs(interval.startedAt);
+const intervalEndMs = interval.endedAt ? toEpochMs(interval.endedAt) : 0;
+if (intervalStartMs > 0 && intervalStartMs <= startedMs && (!intervalEndMs || startedMs <= intervalEndMs)) {
 targetEmail = normalizeEmail(interval.email);
 break; } } }
 const allocations = {};
-if (!isStartedPostActivation && startedAt && ledger.featureActivatedAt && startedAt < ledger.featureActivatedAt && hasToday && allTimeMetrics.totalTokens > todayMetrics.totalTokens) {
+if (!isStartedPostActivation && startedMs > 0 && activatedMs > 0 && startedMs < activatedMs && hasToday && allTimeMetrics.totalTokens > todayMetrics.totalTokens) {
 const preMetrics = subtractMetrics(allTimeMetrics, todayMetrics);
 if (preMetrics.totalTokens > 0 || preMetrics.costUsd > 0) { allocations.unattributed = preMetrics; }
 allocations[targetEmail] = cloneMetrics(todayMetrics); } else {
 const initialMetrics = isStartedPostActivation ? allTimeMetrics : todayMetrics;
 allocations[targetEmail] = cloneMetrics(initialMetrics); }
+const allocationsByDay = {};
+allocationsByDay[dayKey] = cloneAllocations(allocations);
 ledger.sessionAccounts[session.sessionId] = { email: targetEmail, boundAt: options.now || new Date().toISOString(),
 lastDay: currentDay || null,
 source: (typeof activeAccount === 'object' && activeAccount?.source) || 'active_account',
-lastSnapshot: cloneMetrics(allTimeMetrics), allocations };
+lastSnapshot: cloneMetrics(allTimeMetrics), allocations, allocationsByDay };
 changed = true; } else { if (!existing.allocations || !existing.lastSnapshot) {
 const baseEmail = normalizeEmail(existing.email) || activeEmail;
 existing.allocations = { [baseEmail]: cloneMetrics(allTimeMetrics) };
 existing.lastSnapshot = cloneMetrics(allTimeMetrics);
 existing.lastDay = currentDay || existing.lastDay || null;
-changed = true; } else { const hasAllTimeObj = Boolean(session?.periods?.allTime);
+existing.allocationsByDay = {};
+existing.allocationsByDay[existing.lastDay || dayKey] = cloneAllocations(existing.allocations);
+changed = true; } else { if (!existing.allocationsByDay || typeof existing.allocationsByDay !== 'object') {
+existing.allocationsByDay = {};
+const legacyDay = existing.lastDay || dayKey;
+existing.allocationsByDay[legacyDay] = cloneAllocations(existing.allocations);
+changed = true; }
+const hasAllTimeObj = Boolean(session?.periods?.allTime);
 const dayRolledOver = Boolean( !hasAllTimeObj
 && ((currentDay && existing.lastDay && currentDay > existing.lastDay)
 || allTimeMetrics.totalTokens < existing.lastSnapshot.totalTokens)
@@ -288,6 +321,11 @@ if (!existing.allocations[activeEmail]) { existing.allocations[activeEmail] = { 
 inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, models: {} }; }
 const targetAlloc = existing.allocations[activeEmail];
 addUsageToBucket(targetAlloc, delta);
+if (!existing.allocationsByDay[dayKey]) { existing.allocationsByDay[dayKey] = {}; }
+const dayAlloc = existing.allocationsByDay[dayKey];
+if (!dayAlloc[activeEmail]) { dayAlloc[activeEmail] = { totalTokens: 0, costUsd: 0,
+inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, models: {} }; }
+addUsageToBucket(dayAlloc[activeEmail], delta);
 existing.lastSnapshot = cloneMetrics(allTimeMetrics);
 existing.lastDay = currentDay || existing.lastDay || null;
 existing.email = activeEmail;
@@ -299,21 +337,23 @@ return { changed, ledger }; }
 function attributeSession(session, ledger, options = {}) { if (!session || !ledger) {
 return { email: 'unattributed', source: 'unattributed', isUnattributed: true }; }
 const startedAt = extractSessionTimestamp(session);
+const startedMs = toEpochMs(startedAt);
 const sessionDate = resolveSessionDate(session);
 const hasToday = hasActiveTodayPeriod(session);
-const isStartedPostActivation = Boolean(
-startedAt && ledger.featureActivatedAt && startedAt >= ledger.featureActivatedAt
-);
+const activatedMs = toEpochMs(ledger.featureActivatedAt);
+const isStartedPostActivation = Boolean(startedMs > 0 && activatedMs > 0 && startedMs >= activatedMs);
 const existingBinding = session.sessionId && ledger.sessionAccounts?.[session.sessionId];
 if (existingBinding && existingBinding.source === 'manual' && existingBinding.email) { return {
 email: normalizeEmail(existingBinding.email), source: 'manual', isUnattributed: false }; }
-if (startedAt && Array.isArray(ledger.timeline)) { for (let i = ledger.timeline.length - 1; i >= 0; i -= 1) {
+if (startedMs > 0 && Array.isArray(ledger.timeline)) { for (let i = ledger.timeline.length - 1; i >= 0; i -= 1) {
 const interval = ledger.timeline[i];
-if (interval.startedAt <= startedAt && (!interval.endedAt || startedAt <= interval.endedAt)) {
+const intervalStartMs = toEpochMs(interval.startedAt);
+const intervalEndMs = interval.endedAt ? toEpochMs(interval.endedAt) : 0;
+if (intervalStartMs > 0 && intervalStartMs <= startedMs && (!intervalEndMs || startedMs <= intervalEndMs)) {
 const source = interval.source || 'timeline';
 const normEmail = normalizeEmail(interval.email);
 return { email: normEmail, source, isUnattributed: false }; } } }
-if (startedAt && options.quotaWindows) {
+if (startedMs > 0 && options.quotaWindows) {
 const modelKeys = Object.keys(session?.periods?.allTime?.models || session?.models || {});
 const primaryModel = modelKeys[0] || session?.modelId || session?.model || 'gemini-3.8-flash';
 const callAttr = attributeCallRecord(
@@ -335,10 +375,13 @@ return { email: activeEmail, source, isUnattributed: false }; }
 return { email: 'unattributed', source: 'unattributed', isUnattributed: true }; }
 function extractObsMetrics(obs) { const tokens = Number(obs.tokens || obs.totalTokens || 0);
 const cost = Number(obs.cost || obs.costUsd || 0);
-const inputTokens = Number(obs.inputTokens || 0);
 const outputTokens = Number(obs.outputTokens || 0);
 const cacheReadTokens = Number(obs.cacheReadTokens || 0);
 const cacheWriteTokens = Number(obs.cacheWriteTokens || 0);
+const hasInput = obs.inputTokens !== undefined && obs.inputTokens !== null;
+const inputTokens = hasInput
+? Number(obs.inputTokens)
+: Math.max(0, tokens - outputTokens - cacheReadTokens - cacheWriteTokens);
 const reasoningTokens = Number(obs.reasoningTokens || 0);
 const modelId = obs.modelId || obs.model || 'unknown';
 const models = {};
@@ -371,5 +414,5 @@ module.exports = {
   attributeCallRecord,
   emptyMetrics, emptyAccountBucket, cloneMetrics, hasActiveTodayPeriod,
   extractSessionTimestamp, resolveSessionDate, extractSessionMetrics, subtractMetrics,
-  syncActiveAccountSessions, attributeSession
+  syncActiveAccountSessions, allocationsForDay, attributeSession
 };

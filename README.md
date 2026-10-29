@@ -11,7 +11,6 @@ Requires Token Monitor **0.81.0 or later**. Token Monitor 0.80.0 does not includ
 ## Features
 
 - **Automatic multi-account attribution**: Detects the active Google account from local Antigravity state and attributes usage through the active-account heartbeat timeline plus local quota reset windows and CLI/tool log anchors. Records it cannot match stay in a separate unattributed bucket.
-- **Attribution coverage**: Shows how many tokens and how much cost were attributed to specific accounts within the selected range, so partially attributed history stays transparent.
 - **Full model coverage**: Tracks Gemini models and non-Gemini models such as Claude Sonnet/Opus and GPT, separating Gemini, Claude/GPT, and Gemini 4 Argon quota pools.
 - **Custom date range & account filter**: Inspect token usage (Input, Output, Cache Read, Reasoning) and estimated USD cost for any `YYYY-MM-DD ~ YYYY-MM-DD` window and individual Google account.
 - **Self-contained Home view**: Renders its own header and collapse control inside the module instead of modifying the host Home layout, and includes an optional toggleable account-share comparison table.

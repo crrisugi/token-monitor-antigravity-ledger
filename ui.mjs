@@ -31,8 +31,11 @@ let endDate = getTodayString();
 let accountFilter = 'all';
 let state = null;
 let isLoading = false;
+let pendingRefresh = null;
+let requestSeq = 0;
 let loadError = null;
-let isVisible = true;
+let isVisible = context?.visible !== false;
+let userTouchedFilters = false;
 let isPluginCollapsed = false;
 try {
 const saved = localStorage.getItem('ag_ledger_plugin_collapsed');
@@ -51,6 +54,7 @@ isAccountSectionExpanded = saved === 'true';
 }
 const root = document.createElement('div');
 root.className = `ag-ledger-root surface-${context?.surface || 'home'}`;
+root.classList.toggle('hidden', !isVisible);
 container.append(root);
 const activeBadge = document.createElement('span');
 activeBadge.className = 'ag-ledger-badge';
@@ -220,46 +224,76 @@ return;
 }
 statusBanner.classList.add('hidden');
 }
-async function refreshSummary() {
-if (isLoading || isDisposed) return;
+function applyPersistedFilters(result) {
+if (!result || typeof result !== 'object') return;
+const range = result.range;
+if (range && range.start && range.end) {
+startDate = range.start;
+endDate = range.end;
+startInput.value = startDate;
+endInput.value = endDate;
+}
+const persistedFilter = result.accountFilter || result.summary?.accountFilter;
+if (persistedFilter) { accountFilter = persistedFilter; }
+}
+async function refreshSummary(options = {}) {
+if (isDisposed) return;
+if (isLoading) {
+pendingRefresh = { ...(pendingRefresh || {}), ...options,
+explicit: pendingRefresh?.explicit === true || options.explicit === true };
+return;
+}
 isLoading = true;
 loadError = null;
-renderStatusBanner();
+const explicit = options.explicit === true;
+const silent = options.silent === true && !explicit;
+const initial = options.initial === true;
+const auto = options.auto === true && !explicit;
+if (!silent) { renderStatusBanner(); }
+const requestId = ++requestSeq;
+const payload = initial ? {} : { range: { start: startDate, end: endDate }, accountFilter };
+if (auto) { payload.auto = true; }
 try {
-const res = await ctx.backend.call('getSummary', {
-range: { start: startDate, end: endDate },
-accountFilter
-});
-if (!isDisposed && res) {
+const res = await ctx.backend.call('getSummary', payload);
+if (!isDisposed && requestId === requestSeq && res) {
+if (initial && !userTouchedFilters && !pendingRefresh) { applyPersistedFilters(res); }
 state = res;
 }
 } catch (err) {
 console.error('[ag-ledger] getSummary error:', err);
-if (!isDisposed) {
+if (!isDisposed && requestId === requestSeq && (!silent || !state)) {
 loadError = err?.message || '读取用量数据失败';
 }
 } finally {
+if (!isDisposed && requestId === requestSeq) {
 isLoading = false;
-if (!isDisposed) {
 if (state) {
 render();
 } else {
 renderStatusBanner();
 }
 }
+if (!isDisposed && pendingRefresh) {
+const nextRefresh = pendingRefresh;
+pendingRefresh = null;
+refreshSummary(nextRefresh);
+}
 }
 }
 startInput.addEventListener('change', () => {
 startDate = startInput.value;
-refreshSummary();
+userTouchedFilters = true;
+refreshSummary({ explicit: true });
 });
 endInput.addEventListener('change', () => {
 endDate = endInput.value;
-refreshSummary();
+userTouchedFilters = true;
+refreshSummary({ explicit: true });
 });
 accountSelect.addEventListener('change', () => {
 accountFilter = accountSelect.value;
-refreshSummary();
+userTouchedFilters = true;
+refreshSummary({ explicit: true });
 });
 function render() {
 if (!state) return;
@@ -271,6 +305,7 @@ const costUsd = Number(summary?.costUsd || 0);
 const inputTokens = Number(summary?.inputTokens || 0);
 const outputTokens = Number(summary?.outputTokens || 0);
 const cacheReadTokens = Number(summary?.cacheReadTokens || 0);
+const cacheWriteTokens = Number(summary?.cacheWriteTokens || 0);
 const reasoningTokens = Number(summary?.reasoningTokens || 0);
 activeBadge.replaceChildren();
 if (activeAccount?.email) {
@@ -298,16 +333,38 @@ accountSelect.append(optUnattr);
 const normalizedAccounts = (discoveredAccounts || []).map((acc) => (
 typeof acc === 'string' ? { email: acc, displayName: acc } : acc
 )).filter((acc) => acc && acc.email);
-for (const acc of normalizedAccounts) {
-const label = acc.displayName && acc.displayName !== acc.email
-? `${acc.email} (${acc.displayName})`
-: acc.email;
+const accountsByEmail = new Map();
+function addAccountOption(email, displayName) {
+const normalized = typeof email === 'string' ? email.trim().toLowerCase() : '';
+if (!normalized || normalized === 'all' || normalized === 'unattributed') return;
+const existing = accountsByEmail.get(normalized);
+if (!existing) {
+accountsByEmail.set(normalized, { email: normalized,
+displayName: displayName && displayName !== normalized ? displayName : '' });
+} else if (!existing.displayName && displayName && displayName !== normalized) {
+existing.displayName = displayName;
+}
+}
+for (const acc of normalizedAccounts) { addAccountOption(acc.email, acc.displayName); }
+for (const acc of summary?.accounts || []) { addAccountOption(acc?.email, acc?.displayName); }
+for (const interval of state.ledger?.timeline || []) { addAccountOption(interval?.email, null); }
+for (const binding of Object.values(state.ledger?.sessionAccounts || {})) { addAccountOption(binding?.email, null); }
+for (const acc of accountsByEmail.values()) {
+const label = acc.displayName ? `${acc.email} (${acc.displayName})` : acc.email;
 const opt = document.createElement('option');
 opt.value = acc.email;
 opt.textContent = label;
 accountSelect.append(opt);
 }
-accountSelect.value = currentSelected || accountFilter;
+const desiredFilter = currentSelected || accountFilter || 'all';
+if (desiredFilter !== 'all' && desiredFilter !== 'unattributed'
+&& !accountsByEmail.has(desiredFilter.toLowerCase())) {
+const opt = document.createElement('option');
+opt.value = desiredFilter;
+opt.textContent = desiredFilter;
+accountSelect.append(opt);
+}
+accountSelect.value = desiredFilter || 'all';
 compactSummary.textContent = `${formatTokens(totalTokens)} · ${formatCost(costUsd)}`;
 compactSummary.classList.toggle('hidden', !isPluginCollapsed);
 renderStatusBanner();
@@ -335,13 +392,20 @@ valCost.title = `$${costUsd.toFixed(6)}`;
 cardCost.append(labelCost, valCost);
 kpiGrid.append(cardCost);
 const cardBreakdown = document.createElement('div');
-cardBreakdown.className = 'ag-ledger-kpi-card';
+cardBreakdown.className = 'ag-ledger-kpi-card ag-ledger-kpi-breakdown';
 const labelBreakdown = document.createElement('span');
 labelBreakdown.className = 'ag-ledger-kpi-label';
 labelBreakdown.textContent = 'Token 组成明细';
 const subBreakdown = document.createElement('div');
 subBreakdown.className = 'ag-ledger-kpi-sub ag-ledger-num';
-subBreakdown.textContent = `输入: ${formatTokens(inputTokens)} · 输出: ${formatTokens(outputTokens)} · 缓存读取: ${formatTokens(cacheReadTokens)} · 思考: ${formatTokens(reasoningTokens)}`;
+const breakdownParts = [
+`输入: ${formatTokens(inputTokens)}`,
+`输出: ${formatTokens(outputTokens)}`,
+`缓存读取: ${formatTokens(cacheReadTokens)}`
+];
+if (cacheWriteTokens > 0) { breakdownParts.push(`缓存写入: ${formatTokens(cacheWriteTokens)}`); }
+breakdownParts.push(`思考: ${formatTokens(reasoningTokens)}`);
+subBreakdown.textContent = breakdownParts.join(' · ');
 cardBreakdown.append(labelBreakdown, subBreakdown);
 kpiGrid.append(cardBreakdown);
 accountTableWrap.replaceChildren();
@@ -436,7 +500,14 @@ const modelTable = document.createElement('table');
 modelTable.className = 'ag-ledger-table';
 const mThead = document.createElement('thead');
 const mTrHead = document.createElement('tr');
-for (const titleText of ['模型', '总 Token', '输入', '输出', '缓存读取', '思考/推理', '折算费用']) {
+const modelEntries = Object.entries(summary?.models || {});
+modelEntries.sort((a, b) => (b[1].tokens || 0) - (a[1].tokens || 0));
+const showCacheWrite = cacheWriteTokens > 0
+|| modelEntries.some(([, m]) => Number(m?.cacheWriteTokens || 0) > 0);
+const modelHeaders = ['模型', '总 Token', '输入', '输出', '缓存读取'];
+if (showCacheWrite) { modelHeaders.push('缓存写入'); }
+modelHeaders.push('思考/推理', '折算费用');
+for (const titleText of modelHeaders) {
 const th = document.createElement('th');
 th.className = 'ag-ledger-th';
 th.textContent = titleText;
@@ -445,13 +516,11 @@ mTrHead.append(th);
 mThead.append(mTrHead);
 modelTable.append(mThead);
 const mTbody = document.createElement('tbody');
-const modelEntries = Object.entries(summary?.models || {});
-modelEntries.sort((a, b) => (b[1].tokens || 0) - (a[1].tokens || 0));
 if (modelEntries.length === 0) {
 const trEmpty = document.createElement('tr');
 const tdEmpty = document.createElement('td');
 tdEmpty.className = 'ag-ledger-td ag-ledger-empty';
-tdEmpty.colSpan = 7;
+tdEmpty.colSpan = modelHeaders.length;
 tdEmpty.textContent = '当前所选区间无模型用量记录';
 trEmpty.append(tdEmpty);
 mTbody.append(trEmpty);
@@ -478,6 +547,10 @@ const tdMCache = document.createElement('td');
 tdMCache.className = 'ag-ledger-td ag-ledger-num';
 tdMCache.textContent = formatTokens(m.cacheReadTokens);
 tdMCache.title = m.cacheReadTokens.toLocaleString();
+const tdMCacheWrite = document.createElement('td');
+tdMCacheWrite.className = 'ag-ledger-td ag-ledger-num';
+tdMCacheWrite.textContent = formatTokens(m.cacheWriteTokens);
+tdMCacheWrite.title = Number(m.cacheWriteTokens || 0).toLocaleString();
 const tdMReason = document.createElement('td');
 tdMReason.className = 'ag-ledger-td ag-ledger-num';
 tdMReason.textContent = formatTokens(m.reasoningTokens);
@@ -486,7 +559,10 @@ const tdMCost = document.createElement('td');
 tdMCost.className = 'ag-ledger-td ag-ledger-num';
 tdMCost.textContent = formatCost(m.costUsd);
 tdMCost.title = `$${Number(m.costUsd || 0).toFixed(6)}`;
-tr.append(tdModel, tdMTotal, tdMIn, tdMOut, tdMCache, tdMReason, tdMCost);
+const rowCells = [tdModel, tdMTotal, tdMIn, tdMOut, tdMCache];
+if (showCacheWrite) { rowCells.push(tdMCacheWrite); }
+rowCells.push(tdMReason, tdMCost);
+tr.append(...rowCells);
 mTbody.append(tr);
 }
 }
@@ -502,10 +578,11 @@ render();
 }
 });
 }
-refreshSummary();
+refreshSummary({ initial: true });
 return {
 update(nextContext) {
 if (!nextContext) return;
+const wasVisible = isVisible;
 if (nextContext.surface) {
 root.className = `ag-ledger-root surface-${nextContext.surface}`;
 }
@@ -514,6 +591,9 @@ isVisible = nextContext.visible !== false;
 }
 root.classList.toggle('is-collapsed', isPluginCollapsed);
 root.classList.toggle('hidden', !isVisible);
+if (isVisible && !wasVisible) {
+refreshSummary({ silent: true, auto: true });
+}
 },
 dispose() {
 isDisposed = true;

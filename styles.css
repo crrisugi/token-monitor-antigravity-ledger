@@ -295,6 +295,10 @@
   padding: 8px 10px;
 }
 
+.surface-home .ag-ledger-kpi-breakdown {
+  grid-column: 1 / -1;
+}
+
 .ag-ledger-kpi-label {
   font-size: 0.75rem;
   color: #8b949e;
