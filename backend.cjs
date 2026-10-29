@@ -382,7 +382,7 @@ runAutoRefresh(immediate); }, delay);
 if (typeof autoRefreshTimer.unref === 'function') autoRefreshTimer.unref(); }
 function runAutoRefresh(force = false) { if (disposed || !currentVisible) return;
 if (!force && Date.now() - lastScanAt < refreshIntervalMs) { scheduleAutoRefresh(); return; }
-try { publishResult(stampAndCompute({})); } catch (_) {}
+try { publishResult(stampAndCompute({ auto: true })); } catch (_) {}
 scheduleAutoRefresh(); }
 const actions = { async getSummary(payload = {}) {
 const explicit = Boolean(payload && (payload.range !== undefined || payload.accountFilter !== undefined));
