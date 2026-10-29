@@ -36,6 +36,7 @@ let requestSeq = 0;
 let loadError = null;
 let isVisible = context?.visible !== false;
 let userTouchedFilters = false;
+let userLockedEndDate = false;
 let isPluginCollapsed = false;
 try {
 const saved = localStorage.getItem('ag_ledger_plugin_collapsed');
@@ -227,12 +228,12 @@ statusBanner.classList.add('hidden');
 function applyPersistedFilters(result) {
 if (!result || typeof result !== 'object') return;
 const range = result.range;
-if (range && range.start && range.end) {
+if (range && range.start) {
 startDate = range.start;
-endDate = range.end;
 startInput.value = startDate;
-endInput.value = endDate;
 }
+endDate = range?.end || getTodayString();
+endInput.value = endDate;
 const persistedFilter = result.accountFilter || result.summary?.accountFilter;
 if (persistedFilter) { accountFilter = persistedFilter; }
 }
@@ -249,6 +250,8 @@ const explicit = options.explicit === true;
 const silent = options.silent === true && !explicit;
 const initial = options.initial === true;
 const auto = options.auto === true && !explicit;
+if (auto && !userLockedEndDate) { endDate = getTodayString();
+endInput.value = endDate; }
 if (!silent) { renderStatusBanner(); }
 const requestId = ++requestSeq;
 const payload = initial ? {} : { range: { start: startDate, end: endDate }, accountFilter };
@@ -287,6 +290,7 @@ refreshSummary({ explicit: true });
 });
 endInput.addEventListener('change', () => {
 endDate = endInput.value;
+userLockedEndDate = Boolean(endDate && endDate !== getTodayString());
 userTouchedFilters = true;
 refreshSummary({ explicit: true });
 });
@@ -573,6 +577,12 @@ let unsub = null;
 if (ctx.backend?.subscribe) {
 unsub = ctx.backend.subscribe((published) => {
 if (!isDisposed && published) {
+if (!userLockedEndDate && published.range?.end) {
+endDate = published.range.end;
+endInput.value = endDate; }
+if (!userTouchedFilters && published.range?.start) {
+startDate = published.range.start;
+startInput.value = startDate; }
 state = published;
 render();
 }

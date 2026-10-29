@@ -309,6 +309,8 @@ const refreshIntervalMs = Number.isFinite(autoRefreshIntervalMs) && autoRefreshI
 ? autoRefreshIntervalMs
 : AUTO_REFRESH_INTERVAL_MS;
 let currentFilter = 'all';
+let currentStartDate = null;
+let customEndDate = null;
 let currentRange = null;
 let currentVisible = true;
 let lastScanAt = Date.now();
@@ -316,21 +318,28 @@ let autoRefreshTimer = null;
 let disposed = false;
 function applyPreferences(prefs) { if (!prefs || typeof prefs !== 'object') return;
 if (prefs.accountFilter) currentFilter = prefs.accountFilter;
-if (prefs.range) currentRange = prefs.range; }
+const persistedStart = normalizeDate(prefs.startDate || prefs.range?.start);
+if (persistedStart) currentStartDate = persistedStart; }
 applyPreferences(readJson(preferencesFile, null));
 if (storage && typeof storage.get === 'function') { try {
 applyPreferences(await storage.get('preferences')); } catch (_) {} }
-if (!currentRange) { const today = localDayKey() || normalizeDate(new Date());
-currentRange = { start: `${today.slice(0, 7)}-01`, end: today }; }
 function resolveLedger() { if (fs.existsSync(pluginLedgerFile)) {
 return { ledger: loadLedger(pluginLedgerFile), ledgerFile: pluginLedgerFile }; }
 if (fs.existsSync(hostLedgerFile)) { const migrated = loadLedger(hostLedgerFile);
 saveLedger(migrated, pluginLedgerFile);
 return { ledger: migrated, ledgerFile: pluginLedgerFile }; }
 return { ledger: loadLedger(pluginLedgerFile), ledgerFile: pluginLedgerFile }; }
-function computeSummary(payload = {}) { if (payload.accountFilter !== undefined) {
+function computeSummary(payload = {}) { const today = localDayKey() || normalizeDate(new Date());
+if (payload.accountFilter !== undefined) {
 currentFilter = payload.accountFilter || 'all'; }
-if (payload.range !== undefined) { currentRange = payload.range || null; }
+if (payload.range === undefined && payload.auto !== true) { customEndDate = null; }
+if (payload.range !== undefined) {
+const reqStart = normalizeDate(payload.range?.start);
+if (reqStart) currentStartDate = reqStart;
+if (payload.auto !== true && payload.range?.end !== undefined) {
+const reqEnd = normalizeDate(payload.range.end);
+customEndDate = (reqEnd && reqEnd !== today) ? reqEnd : null; } }
+currentRange = { start: currentStartDate || `${today.slice(0, 7)}-01`, end: customEndDate || today };
 const { ledger, ledgerFile } = resolveLedger();
 const settings = readJson(path.join(hostDataDir, 'settings.json'), {});
 const discoveredAccounts = discoverAccounts({ homeDir, settings });
@@ -358,7 +367,8 @@ totalCalls: calls.length
 function stampAndCompute(payload = {}) { const result = computeSummary(payload);
 lastScanAt = Date.now();
 return result; }
-async function savePreferences() { const prefs = { accountFilter: currentFilter, range: currentRange };
+async function savePreferences() { const prefs = { accountFilter: currentFilter, startDate: currentStartDate,
+range: { start: currentStartDate } };
 if (storage && typeof storage.set === 'function') { try { await storage.set('preferences', prefs); } catch (_) {} }
 try { writeJsonAtomic(preferencesFile, prefs); } catch (_) {} }
 function publishResult(result) { if (typeof publish === 'function') { try { publish(result); } catch (_) {} } }
