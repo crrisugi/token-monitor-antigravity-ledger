@@ -23,9 +23,28 @@ function removeSnapshotDir(dir) { if (!dir) return;
 try { for (const name of fs.readdirSync(dir)) { try { fs.unlinkSync(path.join(dir, name)); } catch (_) {} } } catch (_) {}
 try { fs.rmdirSync(dir); } catch (_) {}
 try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); } catch (_) {} }
+function hasCorruptWalOrShm(dbPath) {
+try {
+const shmPath = `${dbPath}-shm`;
+if (fs.existsSync(shmPath) && !fs.statSync(shmPath).isFile()) return true;
+const walPath = `${dbPath}-wal`;
+if (fs.existsSync(walPath)) {
+const walStat = fs.statSync(walPath);
+if (!walStat.isFile()) return true;
+if (walStat.size > 0) {
+if (walStat.size < 32) return true;
+const fd = fs.openSync(walPath, 'r');
+try {
+const hdr = Buffer.alloc(4);
+fs.readSync(fd, hdr, 0, 4, 0);
+const magic = hdr.readUInt32BE(0);
+if (magic !== 0x377f0682 && magic !== 0x377f0683) return true; } finally { fs.closeSync(fd); } } } }
+catch (_) { return true; }
+return false; }
 function openConversationDbWithFallback(dbPath) { if (!DatabaseSync || !fs.existsSync(dbPath)) return null;
 let db = null;
-try { db = new DatabaseSync(dbPath, { readOnly: true });
+try { if (hasCorruptWalOrShm(dbPath)) throw new Error('corrupt wal or shm');
+db = new DatabaseSync(dbPath, { readOnly: true });
 try { db.exec('PRAGMA busy_timeout = 250'); } catch (_) {}
 try { db.exec('PRAGMA query_only = ON'); } catch (_) {}
 db.prepare('SELECT 1 FROM sqlite_master LIMIT 1').get();
