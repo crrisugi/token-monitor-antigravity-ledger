@@ -2,6 +2,8 @@
 
 Token MonitorでAntigravity（GeminiおよびClaude/GPTモデル）のトークン使用量とUSDコスト内訳をGoogleアカウント・カスタム日付範囲ごとに追跡し、複数アカウントへの自動帰属を行います。
 
+> 唯一の正式ソースとコミュニティカタログ配布：[Javis603/token-monitor-plugins](https://github.com/Javis603/token-monitor-plugins)（PR #1）。
+
 ## 互換性とインストール
 
 Token Monitor **0.81.0以降**が必要です。Token Monitor 0.80.0にはプラグインランタイムが含まれず、プラグインのインストールは拒否されます。0.81.0以降では、内蔵の **Token Monitor Community** ディレクトリから直接インストールするか、**設定 → プラグイン → ファイルからインストール** でプラグインフォルダまたは`.tmplugin`パッケージを読み込んで有効化してください。
@@ -21,4 +23,4 @@ Token Monitor **0.81.0以降**が必要です。Token Monitor 0.80.0にはプラ
 
 ## ライセンス
 
-[MIT](LICENSE) · [変更履歴](CHANGELOG.ja.md) · [すべてのプラグイン](../../README.ja.md)
+[MIT](LICENSE) · [変更履歴](CHANGELOG.ja.md)

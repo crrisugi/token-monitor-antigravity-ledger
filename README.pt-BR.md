@@ -2,6 +2,8 @@
 
 Acompanhe o uso de tokens do Antigravity (modelos Gemini e Claude/GPT) e o detalhamento de custos em USD por conta do Google e intervalo de datas personalizado no Token Monitor, com atribuição automática entre várias contas.
 
+> Fonte canônica e distribuição no catálogo da comunidade: [Javis603/token-monitor-plugins](https://github.com/Javis603/token-monitor-plugins) (PR #1).
+
 ## Compatibilidade e instalação
 
 Requer o Token Monitor **0.81.0 ou superior**. O Token Monitor 0.80.0 não inclui o runtime de plugins e recusa a instalação. No 0.81.0 ou superior, instale diretamente pelo diretório integrado **Token Monitor Community** ou importe a pasta do plugin / pacote `.tmplugin` em **Configurações → Plugins → Instalar de arquivo**, revise e ative.
@@ -21,4 +23,4 @@ O plugin acessa somente as seguintes fontes locais, em modo leitura: bancos SQLi
 
 ## Licença
 
-[MIT](LICENSE) · [Changelog](CHANGELOG.pt-BR.md) · [Todos os plugins](../../README.pt-BR.md)
+[MIT](LICENSE) · [Changelog](CHANGELOG.pt-BR.md)

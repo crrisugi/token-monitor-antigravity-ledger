@@ -2,6 +2,8 @@
 
 在 Token Monitor 中按 Google 账号与自定义日期区间统计 Antigravity（包含 Gemini 与 Claude/GPT 全模型）的 Token 消耗与美元折算费用，并自动完成多账号归属。
 
+> 唯一权威源与社区目录分发：[Javis603/token-monitor-plugins](https://github.com/Javis603/token-monitor-plugins)（PR #1）。
+
 ## 兼容性与安装
 
 需要 Token Monitor **0.81.0 或更高版本**。Token Monitor 0.80.0 不包含插件运行时，会拒绝安装插件。0.81.0 及以上版本可直接从内置的 **Token Monitor Community** 目录安装，也可通过 **设置 → 插件 → 从文件安装** 导入完整插件文件夹或 `.tmplugin` 安装包，核对后启用即可。
@@ -21,4 +23,4 @@
 
 ## 许可证
 
-[MIT](LICENSE) · [更新日志](CHANGELOG.zh-CN.md) · [全部插件](../../README.zh-CN.md)
+[MIT](LICENSE) · [更新日志](CHANGELOG.zh-CN.md)
