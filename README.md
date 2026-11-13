@@ -2,8 +2,6 @@
 
 Per-Google-account token usage, USD cost breakdown, custom date-range filtering, and automatic multi-account attribution for Antigravity (Gemini & Claude/GPT models) in Token Monitor.
 
-> Canonical source & community catalog distribution: [Javis603/token-monitor-plugins](https://github.com/Javis603/token-monitor-plugins) (PR #1).
-
 ## Compatibility and installation
 
 Requires Token Monitor **0.81.0 or later**. Token Monitor 0.80.0 does not include the plugin runtime and refuses to install plugins. On 0.81.0+, install this plugin directly from the built-in **Token Monitor Community** directory, or import the complete plugin folder / `.tmplugin` package through **Settings → Plugins → Install from file**, review it and enable it.
@@ -23,4 +21,4 @@ The plugin reads the following local sources only: Antigravity conversation SQLi
 
 ## License
 
-[MIT](LICENSE) · [Changelog](CHANGELOG.md)
+[MIT](LICENSE) · [Changelog](CHANGELOG.md) · [All plugins](../../README.md)

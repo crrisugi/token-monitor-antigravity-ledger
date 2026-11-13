@@ -160,16 +160,16 @@ const matchingConsumed = consumedInGroup.filter((w) => w.startMs <= tsMs && tsMs
 if (matchingConsumed.length === 1) { return { email: normalizeEmail(matchingConsumed[0].email),
 source: 'quota_anchor', layer: 2, isUnattributed: false }; } } }
 return { email: 'unattributed', source: 'unattributed', layer: 3, isUnattributed: true }; }
-function emptyMetrics() { return { tokens: 0, costUsd: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0,
+function emptyMetrics() { return { tokens: 0, costUsd: 0, unpricedTokens: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0,
 cacheWriteTokens: 0, reasoningTokens: 0 }; }
 function emptyAccountBucket(email, displayName = '') { return { email,
-displayName: displayName || (email === 'unattributed' ? '历史汇总（未归属）' : email), totalTokens: 0, costUsd: 0,
+displayName: displayName || (email === 'unattributed' ? '历史汇总（未归属）' : email), totalTokens: 0, costUsd: 0, unpricedTokens: 0,
 inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, percentageOfTotal: 0,
 models: {} }; }
 function cloneMetrics(m) { if (!m) return null;
 const models = {};
 if (m.models) { for (const [k, v] of Object.entries(m.models)) { models[k] = { ...v }; } }
-return { totalTokens: m.totalTokens || 0, costUsd: m.costUsd || 0, inputTokens: m.inputTokens || 0,
+return { totalTokens: m.totalTokens || 0, costUsd: m.costUsd || 0, unpricedTokens: m.unpricedTokens || 0, inputTokens: m.inputTokens || 0,
 outputTokens: m.outputTokens || 0, cacheReadTokens: m.cacheReadTokens || 0,
 cacheWriteTokens: m.cacheWriteTokens || 0, reasoningTokens: m.reasoningTokens || 0, models }; }
 function hasActiveTodayPeriod(session) { if (!session?.periods?.today) return false;
@@ -409,6 +409,7 @@ return { totalTokens: tokens, costUsd: cost, inputTokens, outputTokens, cacheRea
 reasoningTokens, models }; }
 function addUsageToBucket(bucket, usage) { bucket.totalTokens += usage.totalTokens || 0;
 bucket.costUsd += usage.costUsd || 0;
+bucket.unpricedTokens = (bucket.unpricedTokens || 0) + (usage.unpricedTokens || 0);
 bucket.inputTokens += usage.inputTokens || 0;
 bucket.outputTokens += usage.outputTokens || 0;
 bucket.cacheReadTokens += usage.cacheReadTokens || 0;
@@ -420,6 +421,7 @@ if (!bucket.models[modelId]) bucket.models[modelId] = emptyMetrics();
 const target = bucket.models[modelId];
 target.tokens += m.tokens || 0;
 target.costUsd += m.costUsd || 0;
+target.unpricedTokens = (target.unpricedTokens || 0) + (m.unpricedTokens || 0);
 target.inputTokens += m.inputTokens || 0;
 target.outputTokens += m.outputTokens || 0;
 target.cacheReadTokens += m.cacheReadTokens || 0;

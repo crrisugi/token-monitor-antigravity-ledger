@@ -5,9 +5,23 @@ if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
 if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
 return String(n);
 }
-function formatCost(usd) {
+function formatCost(usd, unpricedTokens = 0) {
 const n = Number(usd || 0);
+const u = Number(unpricedTokens || 0);
+if (u > 0) {
+return n > 0 ? '$' + n.toFixed(2) + ' + ?' : '—';
+}
 return '$' + n.toFixed(2);
+}
+function formatCostTitle(usd, unpricedTokens = 0) {
+const n = Number(usd || 0);
+const u = Number(unpricedTokens || 0);
+if (u > 0) {
+return n > 0
+? `已计费部分 $${n.toFixed(6)}；另有 ${u.toLocaleString()} Tokens 未配置费率（未按 $0 计入）`
+: `${u.toLocaleString()} Tokens 未配置费率（未按 $0 计入）`;
+}
+return `$${n.toFixed(6)}`;
 }
 function getTodayString() {
 const d = new Date();
@@ -319,6 +333,7 @@ const discoveredAccounts = state.discoveredAccounts || [];
 const activeAccount = state.activeAccount || null;
 const totalTokens = Number(summary?.totalTokens || 0);
 const costUsd = Number(summary?.costUsd || 0);
+const unpricedTokens = Number(summary?.unpricedTokens || 0);
 const inputTokens = Number(summary?.inputTokens || 0);
 const outputTokens = Number(summary?.outputTokens || 0);
 const cacheReadTokens = Number(summary?.cacheReadTokens || 0);
@@ -383,7 +398,8 @@ opt.textContent = desiredFilter;
 accountSelect.append(opt);
 }
 accountSelect.value = desiredFilter || 'all';
-compactSummary.textContent = `${formatTokens(totalTokens)} · ${formatCost(costUsd)}`;
+compactSummary.textContent = `${formatTokens(totalTokens)} · ${formatCost(costUsd, unpricedTokens)}`;
+compactSummary.title = unpricedTokens > 0 ? formatCostTitle(costUsd, unpricedTokens) : '';
 compactSummary.classList.toggle('hidden', !isPluginCollapsed);
 renderStatusBanner();
 kpiGrid.replaceChildren();
@@ -405,8 +421,8 @@ labelCost.className = 'ag-ledger-kpi-label';
 labelCost.textContent = '折算费用 (USD)';
 const valCost = document.createElement('span');
 valCost.className = 'ag-ledger-kpi-value ag-ledger-num';
-valCost.textContent = formatCost(costUsd);
-valCost.title = `$${costUsd.toFixed(6)}`;
+valCost.textContent = formatCost(costUsd, unpricedTokens);
+valCost.title = formatCostTitle(costUsd, unpricedTokens);
 cardCost.append(labelCost, valCost);
 kpiGrid.append(cardCost);
 const cardBreakdown = document.createElement('div');
@@ -490,8 +506,8 @@ tdTokens.textContent = formatTokens(acc.totalTokens);
 tdTokens.title = acc.totalTokens.toLocaleString();
 const tdCost = document.createElement('td');
 tdCost.className = 'ag-ledger-td ag-ledger-num';
-tdCost.textContent = formatCost(acc.costUsd);
-tdCost.title = `$${acc.costUsd.toFixed(6)}`;
+tdCost.textContent = formatCost(acc.costUsd, acc.unpricedTokens);
+tdCost.title = formatCostTitle(acc.costUsd, acc.unpricedTokens);
 const tdShare = document.createElement('td');
 tdShare.className = 'ag-ledger-td';
 const shareWrap = document.createElement('div');
@@ -575,8 +591,8 @@ tdMReason.textContent = formatTokens(m.reasoningTokens);
 tdMReason.title = m.reasoningTokens.toLocaleString();
 const tdMCost = document.createElement('td');
 tdMCost.className = 'ag-ledger-td ag-ledger-num';
-tdMCost.textContent = formatCost(m.costUsd);
-tdMCost.title = `$${Number(m.costUsd || 0).toFixed(6)}`;
+tdMCost.textContent = formatCost(m.costUsd, m.unpricedTokens);
+tdMCost.title = formatCostTitle(m.costUsd, m.unpricedTokens);
 const rowCells = [tdModel, tdMTotal, tdMIn, tdMOut, tdMCache];
 if (showCacheWrite) { rowCells.push(tdMCacheWrite); }
 rowCells.push(tdMReason, tdMCost);

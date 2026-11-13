@@ -15,12 +15,17 @@ const MODEL_ENUM_MAP = Object.freeze({ 1007: 'gemini-2.5-pro', 1008: 'gemini-2.5
 1320: 'gemini-3.8-flash', 1322: 'gemini-3.8-flash-tiered', 1400: 'claude-opus-5-5-low',
 1401: 'claude-opus-5-5-medium', 1402: 'claude-opus-5-5-high', 1403: 'claude-sonnet-5-5-low',
 1404: 'claude-sonnet-5-5-medium', 1405: 'claude-sonnet-5-5-high', 1417: 'gemini-4-argon', 1418: 'gemini-4-argon',
-1419: 'gemini-4-argon' });
+1419: 'gemini-4-argon', 1427: 'gemini-4-carbon', 1437: 'gemini-4-carbon', 1438: 'gemini-4-carbon',
+1526: 'gemini-4-hydrogen', 1527: 'gemini-4-hydrogen', 1528: 'gemini-4-hydrogen' });
 const DISPLAY_NAME_TO_CANONICAL = Object.freeze({ 'Gemini 3.7 Flash (Low)': 'gemini-3.7-flash',
 'Gemini 3.7 Flash (Medium)': 'gemini-3.7-flash', 'Gemini 3.7 Flash (High)': 'gemini-3.7-flash',
 'Gemini 3.8 Flash (Low)': 'gemini-3.8-flash', 'Gemini 3.8 Flash (Medium)': 'gemini-3.8-flash',
 'Gemini 3.8 Flash (High)': 'gemini-3.8-flash', 'Gemini 4 Argon (Low)': 'gemini-4-argon',
 'Gemini 4 Argon (Medium)': 'gemini-4-argon', 'Gemini 4 Argon (High)': 'gemini-4-argon',
+'Gemini 4 Carbon (Low)': 'gemini-4-carbon', 'Gemini 4 Carbon (Medium)': 'gemini-4-carbon',
+'Gemini 4 Carbon (High)': 'gemini-4-carbon', 'Gemini 4 Carbon (XHigh)': 'gemini-4-carbon',
+'Gemini 4 Hydrogen (Low)': 'gemini-4-hydrogen', 'Gemini 4 Hydrogen (Medium)': 'gemini-4-hydrogen',
+'Gemini 4 Hydrogen (High)': 'gemini-4-hydrogen', 'Gemini 4 Hydrogen (XHigh)': 'gemini-4-hydrogen',
 'Claude Opus 4.6': 'claude-opus-4-6', 'Claude Opus 4.6 (Thinking)': 'claude-opus-4-6-thinking',
 'Claude Sonnet 4.6': 'claude-sonnet-4-6', 'Claude Sonnet 4.6 (Thinking)': 'claude-sonnet-4-6-thinking',
 'Claude Opus 5.5 (Low)': 'claude-opus-5-5-low', 'Claude Opus 5.5 (Medium)': 'claude-opus-5-5-medium',
@@ -28,6 +33,8 @@ const DISPLAY_NAME_TO_CANONICAL = Object.freeze({ 'Gemini 3.7 Flash (Low)': 'gem
 'Claude Sonnet 5.5 (Medium)': 'claude-sonnet-5-5-medium', 'Claude Sonnet 5.5 (High)': 'claude-sonnet-5-5-high' });
 const MODEL_PRICING = Object.freeze({
 'gemini-4-argon': { input: 2.0, cacheRead: 0.1, cacheWrite: 0.0, output: 10.0 },
+'gemini-4-carbon': { input: 2.0, cacheRead: 0.1, cacheWrite: 0.1875, output: 10.0 },
+'gemini-4-hydrogen': { input: 1.5, cacheRead: 0.075, cacheWrite: 0.083333, output: 7.5 },
 'gemini-3.8-flash': { input: 0.75, cacheRead: 0.075, cacheWrite: 0.0, output: 3.75 },
 'gemini-3.7-flash': { input: 0.75, cacheRead: 0.075, cacheWrite: 0.0, output: 3.75 },
 'gemini-3.5-flash-lite': { input: 0.3, cacheRead: 0.03, cacheWrite: 0.0, output: 2.5 },
@@ -269,6 +276,8 @@ checkpointSeq: ckptSeq }; }
 function resolveCanonicalPricingKey(modelId) { if (!modelId) return null;
 const m = String(modelId).trim().toLowerCase();
 if (m.startsWith('gemini-4-argon')) return 'gemini-4-argon';
+if (m.startsWith('gemini-4-carbon')) return 'gemini-4-carbon';
+if (m.startsWith('gemini-4-hydrogen')) return 'gemini-4-hydrogen';
 if (m.startsWith('gemini-3.8-flash')) return 'gemini-3.8-flash';
 if (m.startsWith('gemini-3.7-flash') || m.startsWith('gemini-3.6-flash')) return 'gemini-3.7-flash';
 if (m.includes('flash-lite')) return 'gemini-3.5-flash-lite';
@@ -279,8 +288,86 @@ if (m.startsWith('claude-sonnet-4-6')) return 'claude-sonnet-4-6';
 if (m.startsWith('claude-opus-5-5')) return 'claude-opus-5-5';
 if (m.startsWith('claude-sonnet-5-5')) return 'claude-sonnet-5-5';
 return null; }
+function toFiniteNonNeg(val) {
+if (val === '' || val === null || val === undefined) return undefined;
+const n = typeof val === 'number' ? val : Number(val);
+return Number.isFinite(n) && n >= 0 ? n : undefined; }
+function normalizeRateRecord(raw) {
+if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+const src = (raw.pricing && typeof raw.pricing === 'object' && !Array.isArray(raw.pricing)) ? raw.pricing : raw;
+const pick = (perMKeys, perTokKeys) => {
+for (const k of perMKeys) { const v = toFiniteNonNeg(src[k]); if (v !== undefined) return v; }
+for (const k of perTokKeys) { const v = toFiniteNonNeg(src[k]); if (v !== undefined) return v * 1_000_000; }
+return undefined; };
+const input = pick(['input', 'inputPerM', 'input_cost_per_million_tokens'], ['inputCostPerToken', 'input_cost_per_token']);
+const output = pick(['output', 'outputPerM', 'output_cost_per_million_tokens'], ['outputCostPerToken', 'output_cost_per_token']);
+const cacheRead = pick(['cacheRead', 'cacheReadPerM', 'cache_read_input_token_cost_per_million_tokens'], ['cacheReadInputTokenCost', 'cache_read_input_token_cost']);
+const cacheWrite = pick(['cacheWrite', 'cacheWritePerM', 'cache_creation_input_token_cost_per_million_tokens'], ['cacheCreationInputTokenCost', 'cache_creation_input_token_cost']);
+if (input === undefined && output === undefined) return null;
+return { input: input ?? 0, output: output ?? 0, cacheRead: cacheRead ?? 0, cacheWrite: cacheWrite ?? 0 }; }
+function lookupPricingRates(modelId, pricingContext = null) {
+const raw = String(modelId || '').trim().toLowerCase();
+if (!raw || raw === 'unknown') return { rates: null, pricingKey: null };
+const customMap = pricingContext?.customMap;
+const aliasMap = pricingContext?.aliasMap;
+const remoteCatalog = pricingContext?.remoteCatalog;
+const directLookup = (id) => {
+if (!id) return null;
+const low = String(id).trim().toLowerCase();
+if (customMap && customMap.has(low)) return { rates: customMap.get(low), pricingKey: low };
+const canon = resolveCanonicalPricingKey(low);
+if (canon && customMap && customMap.has(canon)) return { rates: customMap.get(canon), pricingKey: canon };
+if (canon && MODEL_PRICING[canon]) return { rates: MODEL_PRICING[canon], pricingKey: canon };
+if (remoteCatalog && typeof remoteCatalog === 'object') {
+for (const cand of [low, `google/${low}`, `gemini/${low}`, `vertex_ai/${low}`, `google-vertex/${low}`, `anthropic/${low}`, `openai/${low}`, `openrouter/google/${low}`]) {
+const r = normalizeRateRecord(remoteCatalog[cand]);
+if (r) return { rates: r, pricingKey: cand }; } }
+return null; };
+const direct = directLookup(raw);
+if (direct) return direct;
+if (aliasMap && aliasMap.size > 0) {
+let cur = raw;
+const visited = new Set([cur]);
+while (aliasMap.has(cur)) {
+const next = aliasMap.get(cur);
+if (!next || visited.has(next)) break;
+visited.add(next);
+const hit = directLookup(next);
+if (hit) return hit;
+cur = next; } }
+return { rates: null, pricingKey: null }; }
+function buildPricingContext({ settings = null, customPricingFile = null, remoteSnapshot = null } = {}) {
+const customMap = new Map();
+const manualModels = customPricingFile?.models;
+if (manualModels && typeof manualModels === 'object' && !Array.isArray(manualModels)) {
+for (const [k, v] of Object.entries(manualModels)) {
+const r = normalizeRateRecord(v);
+if (k && r) customMap.set(String(k).trim().toLowerCase(), r); } }
+if (Array.isArray(settings?.customModelPricing)) {
+for (const entry of settings.customModelPricing) {
+const id = typeof entry?.modelId === 'string' ? entry.modelId.trim().toLowerCase() : '';
+const r = normalizeRateRecord(entry);
+if (id && r) customMap.set(id, r); } }
+const aliasMap = new Map();
+if (settings?.modelAliases && typeof settings.modelAliases === 'object' && !Array.isArray(settings.modelAliases)) {
+for (const [src, tgt] of Object.entries(settings.modelAliases)) {
+const s = String(src || '').trim().toLowerCase();
+const t = String(tgt || '').trim().toLowerCase();
+if (s && t && s !== t) aliasMap.set(s, t); } }
+const remoteCatalog = {};
+const mergeCatalogObj = (obj) => {
+if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
+const src = (obj.data && typeof obj.data === 'object' && !Array.isArray(obj.data))
+? obj.data
+: ((obj.catalog && typeof obj.catalog === 'object' && !Array.isArray(obj.catalog)) ? obj.catalog : obj);
+for (const [k, v] of Object.entries(src)) {
+const key = String(k || '').trim().toLowerCase();
+if (key && !remoteCatalog[key]) remoteCatalog[key] = v; } };
+if (Array.isArray(remoteSnapshot)) { for (const item of remoteSnapshot) mergeCatalogObj(item); }
+else { mergeCatalogObj(remoteSnapshot); }
+return { customMap, aliasMap, remoteCatalog: Object.keys(remoteCatalog).length > 0 ? remoteCatalog : null }; }
 function resolveModelAndPrice({ responseModel = null, displayName = null, modelEnum = 0, fallbackModel = null,
-inputTokens = 0, cacheReadTokens = 0, cacheWriteTokens = 0, outputTokens = 0
+inputTokens = 0, cacheReadTokens = 0, cacheWriteTokens = 0, outputTokens = 0, pricingContext = null
 } = {}) { let modelId = null;
 let modelBasis = 'unknown';
 const trimmedResp = typeof responseModel === 'string' ? responseModel.trim() : '';
@@ -298,16 +385,22 @@ modelId = decodeModelEnumPlaceholder(modelEnum);
 modelBasis = 'model_enum_placeholder'; } else if (trimmedFallback) {
 modelId = DISPLAY_NAME_TO_CANONICAL[trimmedFallback] || trimmedFallback;
 modelBasis = 'conversation_fallback'; } else { modelId = 'unknown'; }
-const pricingKey = resolveCanonicalPricingKey(modelId) || resolveCanonicalPricingKey(MODEL_ENUM_MAP[modelEnum]);
-const rates = pricingKey ? MODEL_PRICING[pricingKey] : null;
+let { rates, pricingKey } = lookupPricingRates(modelId, pricingContext);
+const isPlaceholderOrUnknown = !modelId || modelId === 'unknown' || String(modelId).startsWith('MODEL_');
+if (!rates && isPlaceholderOrUnknown && modelEnum && MODEL_ENUM_MAP[modelEnum]) {
+const enumLookup = lookupPricingRates(MODEL_ENUM_MAP[modelEnum], pricingContext);
+rates = enumLookup.rates;
+pricingKey = enumLookup.pricingKey; }
+const totalTokens = (inputTokens || 0) + (outputTokens || 0) + (cacheReadTokens || 0) + (cacheWriteTokens || 0);
 let costUsd = 0;
+let unpricedTokens = 0;
 if (rates) { costUsd = ( inputTokens * rates.input
 + cacheReadTokens * rates.cacheRead
 + cacheWriteTokens * rates.cacheWrite
 + outputTokens * rates.output
-) / 1_000_000; }
+) / 1_000_000; } else if (totalTokens > 0) { unpricedTokens = totalTokens; }
 return { model: modelId || 'unknown', canonicalPricingModel: pricingKey, modelDisplayName: trimmedDisp || null,
-modelEnum: modelEnum || 0, modelBasis, costUsd }; }
+modelEnum: modelEnum || 0, modelBasis, costUsd, unpricedTokens, priced: Boolean(rates) }; }
 function extractRetryEntries(rawRetryBlobs) { const nonZero = [];
 if (!Array.isArray(rawRetryBlobs)) return nonZero;
 for (let i = 0; i < rawRetryBlobs.length; i += 1) { const [, rb] = rawRetryBlobs[i];
@@ -321,5 +414,5 @@ module.exports = {
   MODEL_ENUM_MAP, DISPLAY_NAME_TO_CANONICAL, MODEL_PRICING,
   normalizeEmail, localDayKey, toEpochMs, normalizeDate, isAntigravityClient, getTempDir, getSharedDataDir, readJson, writeJsonAtomic,
   parseProto, fVal, fStr, unpackVarints, decodeTimestamp, decodeModelEnumPlaceholder, parseUsageStats,
-  walChecksum, inspectWalBytes, resolveCanonicalPricingKey, resolveModelAndPrice, extractRetryEntries
+  walChecksum, inspectWalBytes, resolveCanonicalPricingKey, lookupPricingRates, buildPricingContext, resolveModelAndPrice, extractRetryEntries
 };

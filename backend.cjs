@@ -7,7 +7,7 @@ const {
   DatabaseSync, DEFAULT_LEDGER_FILENAME, DEFAULT_DB_CACHE_FILENAME,
   MODEL_ENUM_MAP, DISPLAY_NAME_TO_CANONICAL, MODEL_PRICING,
   normalizeEmail, normalizeDate, isAntigravityClient, getSharedDataDir, readJson, writeJsonAtomic,
-  parseProto, decodeTimestamp, parseUsageStats, inspectWalBytes, resolveModelAndPrice,
+  parseProto, decodeTimestamp, parseUsageStats, inspectWalBytes, lookupPricingRates, buildPricingContext, resolveModelAndPrice,
   scanConversationDb, scanAllConversationDbs, extractEmailFromUserStatusValue,
   discoverFromVscdb, discoverFromTools, discoverFromGoogleAccountsJson, discoverFromManaged,
   discoverAccounts, discoverCurrentAccount, localDayKey
@@ -82,11 +82,14 @@ const bucket = getOrCreateAccount(attribution.email);
 const modelId = call.model || 'unknown';
 const totalTokens = Number(call.totalTokens ?? ((call.inputTokens || 0) + (call.outputTokens || 0) + (call.cacheReadTokens || 0) + (call.cacheWriteTokens || 0)));
 const costUsd = Number(call.costUsd || 0);
-addUsageToBucket(bucket, { totalTokens, costUsd, inputTokens: Number(call.inputTokens || 0),
+const unpricedTokens = call.unpricedTokens !== undefined
+? Number(call.unpricedTokens || 0)
+: (costUsd === 0 && totalTokens > 0 && !lookupPricingRates(modelId, options.pricingContext).rates ? totalTokens : 0);
+addUsageToBucket(bucket, { totalTokens, costUsd, unpricedTokens, inputTokens: Number(call.inputTokens || 0),
 outputTokens: Number(call.outputTokens || 0), cacheReadTokens: Number(call.cacheReadTokens || 0),
 cacheWriteTokens: Number(call.cacheWriteTokens || 0),
 reasoningTokens: Number(call.reasoningTokens ?? call.thinkingTokens ?? 0), models: { [modelId]: {
-tokens: totalTokens, costUsd, inputTokens: Number(call.inputTokens || 0),
+tokens: totalTokens, costUsd, unpricedTokens, inputTokens: Number(call.inputTokens || 0),
 outputTokens: Number(call.outputTokens || 0), cacheReadTokens: Number(call.cacheReadTokens || 0),
 cacheWriteTokens: Number(call.cacheWriteTokens || 0),
 reasoningTokens: Number(call.reasoningTokens ?? call.thinkingTokens ?? 0) } } }); } } else {
@@ -223,6 +226,7 @@ addUsageToBucket(getOrCreateAccount(allocEmail), allocMetrics); } } } }
 if (filter === 'unattributed' && !byAccount.unattributed) { getOrCreateAccount('unattributed'); }
 let overallTotalTokens = 0;
 let overallCostUsd = 0;
+let overallUnpricedTokens = 0;
 let overallInputTokens = 0;
 let overallOutputTokens = 0;
 let overallCacheReadTokens = 0;
@@ -231,6 +235,7 @@ let overallReasoningTokens = 0;
 const overallModels = {};
 for (const bucket of Object.values(byAccount)) { overallTotalTokens += bucket.totalTokens;
 overallCostUsd += bucket.costUsd;
+overallUnpricedTokens += bucket.unpricedTokens || 0;
 overallInputTokens += bucket.inputTokens;
 overallOutputTokens += bucket.outputTokens;
 overallCacheReadTokens += bucket.cacheReadTokens;
@@ -241,6 +246,7 @@ if (!overallModels[modelId]) overallModels[modelId] = emptyMetrics();
 const om = overallModels[modelId];
 om.tokens += m.tokens;
 om.costUsd += m.costUsd;
+om.unpricedTokens = (om.unpricedTokens || 0) + (m.unpricedTokens || 0);
 om.inputTokens += m.inputTokens;
 om.outputTokens += m.outputTokens;
 om.cacheReadTokens += m.cacheReadTokens;
@@ -254,6 +260,7 @@ for (const m of Object.values(bucket.models)) { m.costUsd = Number(m.costUsd.toF
 for (const om of Object.values(overallModels)) { om.costUsd = Number(om.costUsd.toFixed(6)); }
 let totalTokens;
 let costUsd;
+let unpricedTokens;
 let inputTokens;
 let outputTokens;
 let cacheReadTokens;
@@ -262,6 +269,7 @@ let reasoningTokens;
 let models;
 if (filter === 'all') { totalTokens = overallTotalTokens;
 costUsd = Number(overallCostUsd.toFixed(6));
+unpricedTokens = overallUnpricedTokens;
 inputTokens = overallInputTokens;
 outputTokens = overallOutputTokens;
 cacheReadTokens = overallCacheReadTokens;
@@ -270,6 +278,7 @@ reasoningTokens = overallReasoningTokens;
 models = overallModels; } else { const target = byAccount[filter] || emptyAccountBucket(filter);
 totalTokens = target.totalTokens;
 costUsd = target.costUsd;
+unpricedTokens = target.unpricedTokens || 0;
 inputTokens = target.inputTokens;
 outputTokens = target.outputTokens;
 cacheReadTokens = target.cacheReadTokens;
@@ -294,9 +303,9 @@ tokenCoveragePercent, costCoveragePercent };
 if (useCalls) { coverage.totalCalls = totalCalls;
 coverage.attributedCalls = attributedCalls;
 coverage.unattributedCalls = unattributedCalls; }
-return { accountFilter: filter, totalTokens, costUsd, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
+return { accountFilter: filter, totalTokens, costUsd, unpricedTokens, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
 reasoningTokens, models, accounts, byAccount, overallTotalTokens, overallCostUsd: Number(overallCostUsd.toFixed(6)),
-coverage }; }
+overallUnpricedTokens, coverage }; }
 function sessionTokenTotal(entry) { if (!entry || typeof entry !== 'object') return 0;
 const target = entry.periods?.allTime || entry.periods?.month || entry.periods?.today || entry;
 return Number(target.totalTokens || target.tokens || entry.totalTokens || entry.tokens || 0) || 0; }
@@ -411,6 +420,15 @@ customEndDate = rangeEnd === today ? null : rangeEnd; }
 currentRange = { start: rangeStart, end: rangeEnd };
 const { ledger } = resolveLedger();
 const settings = readJson(path.join(hostDataDir, 'settings.json'), {});
+const customPricingFile = readJson(path.join(hostDataDir, 'custom-pricing.json'), null);
+const tokscaleCacheDir = path.join(path.dirname(hostDataDir), 'tokscale', 'cache');
+const remoteSnapshots = [
+readJson(path.join(hostDataDir, 'remote-pricing-snapshot.json'), null),
+readJson(path.join(tokscaleCacheDir, 'pricing-openrouter.json'), null),
+readJson(path.join(tokscaleCacheDir, 'pricing-litellm.json'), null),
+readJson(path.join(tokscaleCacheDir, 'pricing-models-dev.json'), null)
+].filter(Boolean);
+const pricingContext = buildPricingContext({ settings, customPricingFile, remoteSnapshot: remoteSnapshots });
 const discoveredAccounts = discoverAccounts({ homeDir, settings });
 const activeAccount = discoverCurrentAccount({ homeDir, settings });
 let ledgerChanged = false;
@@ -418,7 +436,7 @@ if (activeAccount && activeAccount.email) {
 const heartbeat = recordAccountHeartbeat(activeAccount, new Date().toISOString(), ledger, null);
 ledgerChanged = ledgerChanged || heartbeat.changed; }
 const quotaWindows = buildQuotaAttributionWindows(discoveredAccounts, { homeDir });
-const calls = scanAllConversationDbs({ homeDir, conversationDirs, conversationSources, cacheFile: dbCacheFile });
+const calls = scanAllConversationDbs({ homeDir, conversationDirs, conversationSources, cacheFile: dbCacheFile, pricingContext });
 const dailyHistory = readJson(path.join(hostDataDir, 'daily-history-archive.json'), null)
 || readJson(path.join(hostDataDir, 'daily-usage-history.json'), { days: {} });
 const sessions = loadArchivedSessions(hostDataDir);
@@ -427,7 +445,7 @@ const sync = syncActiveAccountSessions(sessions, activeAccount, ledger, { save: 
 ledgerChanged = ledgerChanged || sync.changed; }
 const summary = aggregateAccountUsage( { calls: calls.length > 0 ? calls : null, sessions, dailyHistory,
 range: currentRange, accountFilter: currentFilter, discoveredAccounts, activeAccount, ledger, quotaWindows
-}, { ledger, quotaWindows, bindNewSessions: true }
+}, { ledger, quotaWindows, bindNewSessions: true, pricingContext }
 );
 if (ledgerChanged) { persistLedger(ledger); }
 const resolvedActive = activeAccount

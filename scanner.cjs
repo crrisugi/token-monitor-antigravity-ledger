@@ -85,7 +85,7 @@ const full = path.join(dir, name);
 try { const st = fs.statSync(full);
 if (!st.isDirectory() || st.mtimeMs >= cutoff) continue;
 removeSnapshotDir(full); } catch (_) {} } }
-function scanConversationDb(dbPath, sourceName = 'antigravity') {
+function scanConversationDb(dbPath, sourceName = 'antigravity', pricingContext = null) {
 const handle = openConversationDbWithFallback(dbPath);
 if (!handle) return [];
 const { db } = handle;
@@ -202,7 +202,7 @@ consumedStepSignatures.get(matchedStepIdx).add(signature); }
 const effEnum = au.modelEnum || cmModelEnum;
 const mp = resolveModelAndPrice({ responseModel: respModel, displayName: dispName, modelEnum: effEnum,
 fallbackModel: lastConvModel, inputTokens: au.inputTokens, cacheReadTokens: au.cacheReadTokens,
-cacheWriteTokens: au.cacheWriteTokens, outputTokens: au.outputTokens });
+cacheWriteTokens: au.cacheWriteTokens, outputTokens: au.outputTokens, pricingContext });
 if (mp.model && mp.model !== 'unknown' && !mp.model.startsWith('MODEL_')) {
 lastConvModel = mp.model;
 genModelByIdx.set(gidx, mp.model); }
@@ -212,6 +212,7 @@ executionId: execId, responseId: rid, apiProvider: au.apiProvider || 0, model: m
 modelDisplayName: mp.modelDisplayName, inputTokens: au.inputTokens, outputTokens: au.outputTokens,
 cacheReadTokens: au.cacheReadTokens, cacheWriteTokens: au.cacheWriteTokens, reasoningTokens: au.thinkingTokens,
 totalTokens: au.inputTokens + au.outputTokens + au.cacheReadTokens + au.cacheWriteTokens, costUsd: mp.costUsd,
+unpricedTokens: mp.unpricedTokens || 0,
 callTimestamp: callTs }); } } } catch (_) {}
 for (const [sidx, stepObj] of stepsByIdx.entries()) { const su = stepObj.usage;
 const srEntries = stepObj.retryEntries;
@@ -233,13 +234,14 @@ const refModel = (stepObj.genIdxRef !== null && stepObj.genIdxRef !== undefined)
 const fallbackModel = (!effEnum || !MODEL_ENUM_MAP[effEnum]) ? (refModel || lastConvModel || null) : null;
 const mp = resolveModelAndPrice({ fallbackModel, displayName: null, modelEnum: effEnum,
 inputTokens: au.inputTokens, cacheReadTokens: au.cacheReadTokens, cacheWriteTokens: au.cacheWriteTokens,
-outputTokens: au.outputTokens });
+outputTokens: au.outputTokens, pricingContext });
 rawCalls.push({ source: sourceName, conversationId, dbPath, originTable: 'steps', alignmentMode: 'step_only',
 genIdx: stepObj.genIdxRef ?? null, stepIdx: sidx, attemptIndex: att.attemptIndex || 0, executionId: stepObj.execId,
 responseId: rid, apiProvider: au.apiProvider || 0, model: mp.model, modelEnum: effEnum,
 modelDisplayName: mp.modelDisplayName, inputTokens: au.inputTokens, outputTokens: au.outputTokens,
 cacheReadTokens: au.cacheReadTokens, cacheWriteTokens: au.cacheWriteTokens, reasoningTokens: au.thinkingTokens,
 totalTokens: au.inputTokens + au.outputTokens + au.cacheReadTokens + au.cacheWriteTokens, costUsd: mp.costUsd,
+unpricedTokens: mp.unpricedTokens || 0,
 callTimestamp: stepObj.createdAt }); } }
 const anchors = [];
 for (const [sidx, stepObj] of stepsByIdx.entries()) {
@@ -336,7 +338,7 @@ rawRecords.push(...retagCalls(diskHit.calls, targetSource));
 liveEntries.set(dbPath, diskHit);
 continue; }
 
-const calls = scanConversationDb(dbPath, targetSource);
+const calls = scanConversationDb(dbPath, targetSource, options.pricingContext || null);
 const entry = { key: fp.key, mtimeMs: fp.mtimeMs, size: fp.size, walMtimeMs: fp.walMtimeMs, walSize: fp.walSize,
 calls };
 GLOBAL_DB_SCAN_CACHE.set(dbPath, entry);
@@ -347,18 +349,34 @@ rawRecords.push(...calls); } }
 if (cacheChanged && cacheFile) { const cache = ensureDiskCache();
 for (const [dbPath, entry] of liveEntries) { cache.entries[dbPath] = entry; }
 try { writeJsonAtomic(cacheFile, cache, { compact: true }); } catch (_) {} }
+const pricingContext = options.pricingContext || null;
+const refreshCallPricing = (rec) => {
+const mp = resolveModelAndPrice({
+responseModel: rec.model && rec.model !== 'unknown' && !String(rec.model).startsWith('MODEL_') ? rec.model : null,
+displayName: rec.modelDisplayName || null,
+modelEnum: rec.modelEnum || 0,
+fallbackModel: rec.model || null,
+inputTokens: rec.inputTokens || 0,
+cacheReadTokens: rec.cacheReadTokens || 0,
+cacheWriteTokens: rec.cacheWriteTokens || 0,
+outputTokens: rec.outputTokens || 0,
+pricingContext
+});
+return { ...rec, model: mp.model || rec.model, costUsd: mp.costUsd, unpricedTokens: mp.unpricedTokens || 0 }; };
 const dedupByKey = new Map();
-for (const rec of rawRecords) { const rid = rec.responseId;
+for (const rawRec of rawRecords) { const rec = refreshCallPricing(rawRec);
+const rid = rec.responseId;
 const dkey = rid
 ? `rid:${rec.apiProvider || 0}:${rid}`
 : `no_rid:${rec.conversationId}:${rec.genIdx ?? -1}:${rec.stepIdx ?? -1}:${rec.attemptIndex ?? 0}:${callUsageSignature(rec)}`;
-if (!dedupByKey.has(dkey)) { dedupByKey.set(dkey, { ...rec }); } else { const existing = dedupByKey.get(dkey);
+if (!dedupByKey.has(dkey)) { dedupByKey.set(dkey, rec); } else { const existing = dedupByKey.get(dkey);
 const existingIsPlaceholder = !existing.model || existing.model === 'unknown' || existing.model.startsWith('MODEL_');
 const recHasBetterModel = rec.model && rec.model !== 'unknown' && !rec.model.startsWith('MODEL_');
 if (existingIsPlaceholder && recHasBetterModel) {
 existing.model = rec.model;
 existing.modelDisplayName = rec.modelDisplayName || existing.modelDisplayName;
-existing.costUsd = rec.costUsd; }
+existing.costUsd = rec.costUsd;
+existing.unpricedTokens = rec.unpricedTokens || 0; }
 if (!existing.callTimestamp && rec.callTimestamp) { existing.callTimestamp = rec.callTimestamp;
 existing.timestampMs = rec.timestampMs;
 existing.day = rec.day; } } }
