@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2
+
+Corrige o bug de starvation do timer em segundo plano em que chamadas frequentes de `update()` do host reiniciavam o temporizador de 30s e impediam o registro enquanto oculto; lê imediatamente o estado inicial do modo em segundo plano no primeiro quadro e adiciona detecção de atividade de conta pelos logs oficiais do Antigravity CLI (`cli-*.log`).
+
 ## 0.2.1
 
 Declara suporte a execução em segundo plano (`"background": true`) para que o Token Monitor continue registrando trocas de conta e deltas de uso mesmo com a janela principal minimizada ou fechada, exibe um aviso discreto quando o modo em segundo plano está desativado e preserva a atribuição em pausas curtas da mesma conta (até 2 horas sem atividade de outra conta).

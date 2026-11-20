@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2
+
+Fix background timer starvation bug where frequent host `update()` calls reset the background heartbeat timer and stalled hidden-mode attribution; read initial background-mode state immediately for first-frame reminders; and add official Antigravity CLI auth log (`cli-*.log`) account activity detection.
+
 ## 0.2.1
 
 Enable background execution support (`"background": true`) so Token Monitor can keep recording account switches and usage deltas while the Home window is minimized or closed, show an unobtrusive UI reminder when background mode is disabled, and preserve attribution across short same-account window pauses (up to 2 hours when no other account activity occurred).

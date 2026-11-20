@@ -390,9 +390,15 @@ async function activate({
   let currentVisible = true;
   let backgroundEnabled = null;
   let lastScanAt = Date.now();
+  let lastBackgroundSyncAt = 0;
+  let backgroundSyncInFlight = false;
   let autoRefreshTimer = null;
   let heartbeatTimer = null;
   let disposed = false;
+
+  const initialHostSettings = readJson(path.join(hostDataDir, 'settings.json'), null);
+  const initialBgState = initialHostSettings?.pluginStates?.['antigravity-account-ledger']?.background;
+  if (typeof initialBgState === 'boolean') backgroundEnabled = initialBgState;
 
   function applyPreferences(prefs) {
     if (!prefs || typeof prefs !== 'object') return;
@@ -576,18 +582,28 @@ async function activate({
     if (heartbeatTimer) { clearTimeout(heartbeatTimer); heartbeatTimer = null; }
   }
 
+  async function runBackgroundSync() {
+    if (disposed || currentVisible || backgroundSyncInFlight) return;
+    backgroundSyncInFlight = true;
+    try {
+      const today = localDayKey() || normalizeDate(new Date());
+      await syncLiveState(today);
+      lastBackgroundSyncAt = Date.now();
+    } catch (_) {} finally {
+      backgroundSyncInFlight = false;
+    }
+  }
+
   function scheduleBackgroundHeartbeat() {
-    if (disposed || currentVisible) return;
-    clearBackgroundHeartbeat();
+    if (disposed || currentVisible || heartbeatTimer) return;
+    const elapsed = lastBackgroundSyncAt > 0 ? (Date.now() - lastBackgroundSyncAt) : 0;
+    const delay = lastBackgroundSyncAt > 0 ? Math.max(0, heartbeatIntervalMs - elapsed) : heartbeatIntervalMs;
     heartbeatTimer = setTimeout(async () => {
       heartbeatTimer = null;
       if (disposed || currentVisible) return;
-      try {
-        const today = localDayKey() || normalizeDate(new Date());
-        await syncLiveState(today);
-      } catch (_) {}
+      await runBackgroundSync();
       scheduleBackgroundHeartbeat();
-    }, heartbeatIntervalMs);
+    }, delay);
     if (typeof heartbeatTimer.unref === 'function') heartbeatTimer.unref();
   }
 
@@ -636,7 +652,13 @@ async function activate({
     currentVisible = nextVisible;
     if (!currentVisible) {
       clearAutoRefresh();
-      scheduleBackgroundHeartbeat();
+      const bgThrottleMs = Math.min(refreshIntervalMs, heartbeatIntervalMs);
+      if (lastBackgroundSyncAt > 0 && (Date.now() - lastBackgroundSyncAt) >= bgThrottleMs) {
+        void runBackgroundSync().finally(() => scheduleBackgroundHeartbeat());
+      } else {
+        if (lastBackgroundSyncAt === 0) lastBackgroundSyncAt = lastScanAt;
+        scheduleBackgroundHeartbeat();
+      }
       return;
     }
     clearBackgroundHeartbeat();

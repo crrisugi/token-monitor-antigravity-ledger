@@ -444,6 +444,63 @@ function discoverFromManaged(settings) {
   return accounts;
 }
 
+const CLI_LOG_FN_RE = /cli-(\d{4})\d{4}_\d{6}\.log$/;
+const CLI_AUTH_RE_GLOBAL = /I(\d{2})(\d{2})\s+(\d{2}):(\d{2}):(\d{2})\.(\d+)\s+\d+\s+server_oauth\.go:\d+\]\s+applyAuthResult:\s+email=([^\s,]+)/g;
+const CLI_LOG_MAX_SCAN_BYTES = 2 * 1024 * 1024;
+const CLI_LOG_HEAD_BYTES = 64 * 1024;
+
+function readCliLogText(fd, size) {
+  if (size <= CLI_LOG_MAX_SCAN_BYTES) {
+    const buf = Buffer.alloc(size);
+    fs.readSync(fd, buf, 0, size, 0);
+    return buf.toString('utf8');
+  }
+  const headBuf = Buffer.alloc(CLI_LOG_HEAD_BYTES);
+  fs.readSync(fd, headBuf, 0, CLI_LOG_HEAD_BYTES, 0);
+  const tailLen = CLI_LOG_MAX_SCAN_BYTES - CLI_LOG_HEAD_BYTES;
+  const tailBuf = Buffer.alloc(tailLen);
+  fs.readSync(fd, tailBuf, 0, tailLen, size - tailLen);
+  return `${headBuf.toString('utf8')}\n${tailBuf.toString('utf8')}`;
+}
+
+function discoverFromCliLogs(options = {}) {
+  const home = options.homeDir || os.homedir();
+  const isCustomHome = Boolean(options.homeDir && path.resolve(options.homeDir) !== path.resolve(os.homedir()));
+  const cliBase = options.cliHomeDir || (!isCustomHome && process.env.GEMINI_CLI_HOME) || path.join(home, '.gemini', 'antigravity-cli');
+  const logDir = options.cliLogDir || path.join(cliBase, 'log');
+  const accounts = [];
+  try {
+    if (!fs.existsSync(logDir)) return accounts;
+    const files = fs.readdirSync(logDir).filter((f) => f.startsWith('cli-') && f.endsWith('.log')).sort().slice(-12);
+    for (const file of files) {
+      const fullPath = path.join(logDir, file);
+      let fd = null;
+      try {
+        const st = fs.statSync(fullPath);
+        if (!st.isFile() || st.size === 0) continue;
+        fd = fs.openSync(fullPath, 'r');
+        const text = readCliLogText(fd, st.size);
+        const matches = [...text.matchAll(CLI_AUTH_RE_GLOBAL)];
+        if (!matches.length) continue;
+        const m = matches[matches.length - 1];
+        const fnMatch = file.match(CLI_LOG_FN_RE);
+        let year = fnMatch ? Number(fnMatch[1]) : new Date(st.mtimeMs).getFullYear();
+        const [, mo, da, hh, mm, ss, us, rawEmail] = m;
+        const email = normalizeEmail(rawEmail);
+        if (!email || !email.includes('@')) continue;
+        const buildMs = (yr) => new Date(yr, Number(mo) - 1, Number(da), Number(hh), Number(mm), Number(ss), Math.floor(Number(us) / 1000)).getTime();
+        let authMs = buildMs(year);
+        if (fnMatch && authMs > st.mtimeMs + 86400_000) { year -= 1; authMs = buildMs(year); }
+        const lastUsedMs = Math.max(authMs, Math.min(Math.round(st.mtimeMs), authMs + 24 * 60 * 60 * 1000));
+        accounts.push({ email, displayName: email, source: 'cli_log', lastUsed: Math.round(lastUsedMs / 1000) });
+      } catch (_) {} finally {
+        if (fd !== null) { try { fs.closeSync(fd); } catch (_) {} }
+      }
+    }
+  } catch (_) {}
+  return accounts;
+}
+
 function discoverAccounts(options = {}) {
   const map = new Map();
   function addAccount(acc) {
@@ -486,6 +543,7 @@ function discoverAccounts(options = {}) {
   for (const a of discoverFromVscdb(options).accounts) addAccount(a);
   for (const a of discoverFromGoogleAccountsJson(options).accounts) addAccount(a);
   for (const a of discoverFromOAuthTokens(options).accounts) addAccount(a);
+  for (const a of discoverFromCliLogs(options)) addAccount(a);
   for (const a of discoverFromManaged(options.settings)) addAccount(a);
   return Array.from(map.values());
 }
@@ -572,6 +630,7 @@ module.exports = {
   discoverFromTools,
   discoverFromGoogleAccountsJson,
   discoverFromOAuthTokens,
+  discoverFromCliLogs,
   discoverFromManaged,
   discoverAccounts,
   discoverCurrentAccount,

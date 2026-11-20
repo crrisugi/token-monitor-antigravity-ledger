@@ -6,7 +6,7 @@
     "zh-TW": "Antigravity 多帳號用量帳本",
     "zh-CN": "Antigravity 多账号用量账本"
   },
-  "version": "0.2.1",
+  "version": "0.2.2",
   "background": true,
   "description": {
     "en": "Per-Google-account token usage, USD cost breakdown, custom date-range filtering, and automatic multi-account attribution for Antigravity (Gemini & Claude/GPT models).",
