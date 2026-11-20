@@ -381,7 +381,8 @@ existing.displayName = displayName;
 for (const acc of normalizedAccounts) { addAccountOption(acc.email, acc.displayName); }
 for (const acc of summary?.accounts || []) { addAccountOption(acc?.email, acc?.displayName); }
 for (const interval of state.ledger?.timeline || []) { addAccountOption(interval?.email, null); }
-for (const binding of Object.values(state.ledger?.sessionAccounts || {})) { addAccountOption(binding?.email, null); }
+for (const dayEntry of Object.values(state.ledger?.daily || {})) {
+for (const email of Object.keys(dayEntry?.allocations || {})) { addAccountOption(email, null); } }
 for (const acc of accountsByEmail.values()) {
 const label = acc.displayName ? `${acc.email} (${acc.displayName})` : acc.email;
 const opt = document.createElement('option');
@@ -536,11 +537,7 @@ const mThead = document.createElement('thead');
 const mTrHead = document.createElement('tr');
 const modelEntries = Object.entries(summary?.models || {});
 modelEntries.sort((a, b) => (b[1].tokens || 0) - (a[1].tokens || 0));
-const showCacheWrite = cacheWriteTokens > 0
-|| modelEntries.some(([, m]) => Number(m?.cacheWriteTokens || 0) > 0);
-const modelHeaders = ['模型', '总 Token', '输入', '输出', '缓存读取'];
-if (showCacheWrite) { modelHeaders.push('缓存写入'); }
-modelHeaders.push('思考/推理', '折算费用');
+const modelHeaders = ['模型', '总 Token', '占比 (%)', '折算费用'];
 for (const titleText of modelHeaders) {
 const th = document.createElement('th');
 th.className = 'ag-ledger-th';
@@ -559,6 +556,7 @@ tdEmpty.textContent = '当前所选区间无模型用量记录';
 trEmpty.append(tdEmpty);
 mTbody.append(trEmpty);
 } else {
+const modelTokenSum = modelEntries.reduce((sum, [, m]) => sum + Number(m?.tokens || 0), 0);
 for (const [modelId, m] of modelEntries) {
 const tr = document.createElement('tr');
 tr.className = 'ag-ledger-row';
@@ -568,35 +566,16 @@ tdModel.textContent = modelId;
 const tdMTotal = document.createElement('td');
 tdMTotal.className = 'ag-ledger-td ag-ledger-num';
 tdMTotal.textContent = formatTokens(m.tokens);
-tdMTotal.title = m.tokens.toLocaleString();
-const tdMIn = document.createElement('td');
-tdMIn.className = 'ag-ledger-td ag-ledger-num';
-tdMIn.textContent = formatTokens(m.inputTokens);
-tdMIn.title = m.inputTokens.toLocaleString();
-const tdMOut = document.createElement('td');
-tdMOut.className = 'ag-ledger-td ag-ledger-num';
-tdMOut.textContent = formatTokens(m.outputTokens);
-tdMOut.title = m.outputTokens.toLocaleString();
-const tdMCache = document.createElement('td');
-tdMCache.className = 'ag-ledger-td ag-ledger-num';
-tdMCache.textContent = formatTokens(m.cacheReadTokens);
-tdMCache.title = m.cacheReadTokens.toLocaleString();
-const tdMCacheWrite = document.createElement('td');
-tdMCacheWrite.className = 'ag-ledger-td ag-ledger-num';
-tdMCacheWrite.textContent = formatTokens(m.cacheWriteTokens);
-tdMCacheWrite.title = Number(m.cacheWriteTokens || 0).toLocaleString();
-const tdMReason = document.createElement('td');
-tdMReason.className = 'ag-ledger-td ag-ledger-num';
-tdMReason.textContent = formatTokens(m.reasoningTokens);
-tdMReason.title = m.reasoningTokens.toLocaleString();
+tdMTotal.title = Number(m.tokens || 0).toLocaleString();
+const tdMShare = document.createElement('td');
+tdMShare.className = 'ag-ledger-td ag-ledger-num';
+const pct = modelTokenSum > 0 ? ((Number(m.tokens || 0) / modelTokenSum) * 100).toFixed(1) : '0.0';
+tdMShare.textContent = `${pct}%`;
 const tdMCost = document.createElement('td');
 tdMCost.className = 'ag-ledger-td ag-ledger-num';
 tdMCost.textContent = formatCost(m.costUsd, m.unpricedTokens);
 tdMCost.title = formatCostTitle(m.costUsd, m.unpricedTokens);
-const rowCells = [tdModel, tdMTotal, tdMIn, tdMOut, tdMCache];
-if (showCacheWrite) { rowCells.push(tdMCacheWrite); }
-rowCells.push(tdMReason, tdMCost);
-tr.append(...rowCells);
+tr.append(tdModel, tdMTotal, tdMShare, tdMCost);
 mTbody.append(tr);
 }
 }

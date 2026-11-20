@@ -1,5 +1,9 @@
 # 更新日志
 
+## 0.2.0
+
+重构为宿主优先架构：直接复用 Token Monitor 宿主的 `data.query`（`tools` / `models` / `history` / `limits`）获取用量与折算费用，彻底移除插件侧 SQLite/Protobuf 扫描、硬编码定价表与易误归属的配额锚点猜测；改用可跨重启的按日高水位增量实时分账，结合宿主实时 RPC 探测、Antigravity 2.0 `app_storage.json` 时效择优以及后台隐藏同步与离线断档保护。
+
 ## 0.1.0
 
 首次发布：按 Google 账号统计 Antigravity（含 Gemini 与 Claude/GPT 模型）的 Token 用量与美元折算费用，支持活跃账号心跳时间线与本地配额/日志锚点的多账号自动归属，并提供自定义日期区间与账号筛选，以及独立可折叠的主页内嵌视图。

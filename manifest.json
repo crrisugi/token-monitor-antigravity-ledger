@@ -6,7 +6,7 @@
     "zh-TW": "Antigravity 多帳號用量帳本",
     "zh-CN": "Antigravity 多账号用量账本"
   },
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": {
     "en": "Per-Google-account token usage, USD cost breakdown, custom date-range filtering, and automatic multi-account attribution for Antigravity (Gemini & Claude/GPT models).",
     "zh-TW": "按 Antigravity 切換登入的不同 Google 帳號與自訂日期區間統計全部模型（Gemini 與 Claude/GPT）的 Token 消耗與折算費用，並自動進行多帳號歸屬。",
@@ -31,9 +31,8 @@
     "README.ko.md",
     "README.ja.md",
     "README.pt-BR.md",
-    "protobuf.cjs",
-    "scanner.cjs",
-    "attribution.cjs",
+    "accounts.cjs",
+    "ledger.cjs",
     "backend.cjs",
     "ui.mjs",
     "styles.css",
