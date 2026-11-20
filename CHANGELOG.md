@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1
+
+Enable background execution support (`"background": true`) so Token Monitor can keep recording account switches and usage deltas while the Home window is minimized or closed, show an unobtrusive UI reminder when background mode is disabled, and preserve attribution across short same-account window pauses (up to 2 hours when no other account activity occurred).
+
 ## 0.2.0
 
 Switch to Token Monitor host-first accounting (`data.query` for `tools`, `models`, `history`, and `limits`) with restart-safe daily high-water delta attribution: eliminate plugin-side SQLite/Protobuf scanning, hardcoded model pricing tables, and false single-account quota-anchor guesses; detect live accounts via host RPC probe and Antigravity 2.0 `app_storage.json` using freshness comparison; keep lightweight background sync while hidden with offline gap protection.

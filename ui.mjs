@@ -237,6 +237,10 @@ if (!state) {
 statusBanner.textContent = '正在扫描本地 Antigravity 用量记录...';
 return;
 }
+if (state.backgroundEnabled === false) {
+statusBanner.textContent = '提示：未开启插件后台运行，关闭或最小化窗口期间将暂停自动分账（请在「设置 → 插件」中开启后台运行）。';
+return;
+}
 statusBanner.classList.add('hidden');
 }
 function applyPersistedFilters(result) {

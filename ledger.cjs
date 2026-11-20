@@ -12,6 +12,7 @@ const {
 const DEFAULT_LEDGER_FILENAME = 'antigravity-account-ledger.json';
 const LEDGER_VERSION = 2;
 const DEFAULT_HEARTBEAT_GAP_MS = 10 * 60 * 1000;
+const SAME_ACCOUNT_CONTINUITY_GAP_MS = 2 * 60 * 60 * 1000;
 const HEARTBEAT_PERSIST_INTERVAL_MS = 60 * 1000;
 
 function toNonNegNum(val) {
@@ -388,7 +389,23 @@ function syncTodaySnapshot(todayKey, rawSnapshot, activeAccount, ledger, options
     changed = true;
   } else {
     const prevObservedMs = toEpochMs(existing.lastObservedAt || ledger.lastObservedAt);
-    const isContinuous = Boolean(prevObservedMs > 0 && nowMs >= prevObservedMs && (nowMs - prevObservedMs) <= maxGapMs);
+    const gapMs = prevObservedMs > 0 && nowMs >= prevObservedMs ? (nowMs - prevObservedMs) : Infinity;
+    const prevAccountEmail = normalizeEmail(options.previousActiveAccount || ledger.lastActiveAccount);
+    const sameAccountContinuityGapMs = Number.isFinite(options.sameAccountContinuityGapMs) && options.sameAccountContinuityGapMs >= 0
+      ? options.sameAccountContinuityGapMs
+      : SAME_ACCOUNT_CONTINUITY_GAP_MS;
+    const otherAccountUsedDuringGap = Array.isArray(options.discoveredAccounts)
+      && options.discoveredAccounts.some((acc) => {
+        const email = normalizeEmail(typeof acc === 'string' ? acc : acc?.email);
+        if (!email || email === activeEmail) return false;
+        const usedMs = toEpochMs(acc?.lastUsed ?? acc?.last_used ?? 0);
+        return usedMs > prevObservedMs && usedMs <= nowMs;
+      });
+    const isSameAccountShortPause = Boolean(
+      activeEmail && prevAccountEmail && activeEmail === prevAccountEmail
+      && gapMs <= sameAccountContinuityGapMs && !otherAccountUsedDuringGap
+    );
+    const isContinuous = Boolean((gapMs <= maxGapMs) || isSameAccountShortPause);
     const delta = subtractUsage(snapshot, existing.lastSnapshot);
     const hasDelta = delta.totalTokens > 0 || delta.costUsd > 0 || Object.keys(delta.models).length > 0;
     if (hasDelta) {

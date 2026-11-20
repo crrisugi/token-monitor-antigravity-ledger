@@ -388,6 +388,7 @@ async function activate({
   let customEndDate = null;
   let currentRange = null;
   let currentVisible = true;
+  let backgroundEnabled = null;
   let lastScanAt = Date.now();
   let autoRefreshTimer = null;
   let heartbeatTimer = null;
@@ -466,12 +467,18 @@ async function activate({
 
     let ledgerChanged = false;
     const nowIso = new Date().toISOString();
+    const previousActiveAccount = ledger.lastActiveAccount;
     if (activeAccount && activeAccount.email) {
       const hb = recordAccountHeartbeat(activeAccount, nowIso, ledger, null);
       ledgerChanged = ledgerChanged || hb.changed;
     }
     if (todaySnapshot) {
-      const sync = syncTodaySnapshot(today, todaySnapshot, activeAccount, ledger, { now: nowIso, save: false });
+      const sync = syncTodaySnapshot(today, todaySnapshot, activeAccount, ledger, {
+        now: nowIso,
+        save: false,
+        previousActiveAccount,
+        discoveredAccounts
+      });
       ledgerChanged = ledgerChanged || sync.changed;
     }
     if (ledgerChanged) persistLedger(ledger);
@@ -528,6 +535,7 @@ async function activate({
       discoveredAccounts,
       ledger,
       featureActivatedAt: ledger.featureActivatedAt,
+      backgroundEnabled,
       range: currentRange,
       scannerStats: {
         source: todaySnapshot ? 'host_business_data' : historyResult.source
@@ -622,6 +630,7 @@ async function activate({
 
   function update(context = {}) {
     if (disposed) return;
+    if (typeof context?.background === 'boolean') backgroundEnabled = context.background;
     const nextVisible = typeof context?.visible === 'boolean' ? context.visible : currentVisible;
     const becameVisible = nextVisible && !currentVisible;
     currentVisible = nextVisible;
